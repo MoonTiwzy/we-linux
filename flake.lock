@@ -1,0 +1,49 @@
+{
+  "nodes": {
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1794042290,
+        "narHash": "sha256-ziZn2PvCJE5JEEpqTdxXwJpPB+L3YqoCpTAMCzyaP3U=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "f4a03c008967841f2a0b3cb7c436fc6fc31671f6",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "penguin-engine": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1794448299,
+        "narHash": "sha256-qwmYzRrIJFxUn60cuVY5ayj5f+N7uh5akXm2uSmAhVg=",
+        "owner": "MoonTiwzy",
+        "repo": "penguin-engine",
+        "rev": "6882d940a284ffe78e9ebe63682ca50fa95242c0",
+        "type": "github"
+      },
+      "original": {
+        "owner": "MoonTiwzy",
+        "ref": "low-footprint",
+        "repo": "penguin-engine",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "nixpkgs": "nixpkgs",
+        "penguin-engine": "penguin-engine"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

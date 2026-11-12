@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=WE Linux
+GenericName=Live wallpapers
+Comment=Wallpaper Engine's library, workshop and live wallpapers
+Comment[ru]=Wallpaper Engine: библиотека, мастерская и живые обои
+Exec=we-linux
+Icon=we-linux
+Categories=Utility;Settings;DesktopSettings;
+Keywords=wallpaper;engine;steam;workshop;live;
+StartupWMClass=we-linux

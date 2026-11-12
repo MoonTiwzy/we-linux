@@ -1,0 +1,20 @@
+[package]
+name = "we-linux"
+description = "Wallpaper Engine workshop browser and library for Linux"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-software", "accessibility"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = "3"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+
+[build-dependencies]
+slint-build = "1.18"
+
+[profile.release]
+lto = "thin"
+strip = true
