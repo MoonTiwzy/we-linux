@@ -32,6 +32,8 @@ pub struct Decoded {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+    /// How long the first frame of an animated preview shows, in milliseconds.
+    pub delay: u32,
     /// The rest of an animated preview (large jobs only): frames the size of
     /// the first, each with how long it shows in milliseconds.
     pub frames: Vec<(Vec<u8>, u32)>,
@@ -50,9 +52,10 @@ fn cache_dir() -> PathBuf {
 }
 
 /// A workshop preview as Steam has it (a 192-512 px GIF or JPEG; its image
-/// server only pads on request, it does not scale up), cached by item id.
+/// server only pads on request, it does not scale up), cached by item id and
+/// by its URL: an item whose preview was changed has another.
 fn fetch(url: &str, id: u64) -> Result<Vec<u8>, String> {
-    let cached = cache_dir().join(id.to_string());
+    let cached = cache_dir().join(format!("{id}-{:016x}", crate::engine::fnv(url)));
     if let Ok(bytes) = std::fs::read(&cached)
         && !bytes.is_empty()
     {
@@ -73,6 +76,18 @@ fn fetch(url: &str, id: u64) -> Result<Vec<u8>, String> {
     let _ = std::fs::create_dir_all(cache_dir());
     if std::fs::write(&part, &bytes).and_then(|()| std::fs::rename(&part, &cached)).is_err() {
         let _ = std::fs::remove_file(&part);
+        return Ok(bytes);
+    }
+    // The item's earlier previews (and the ones kept by id alone before).
+    let earlier = format!("{id}-");
+    if let Ok(files) = std::fs::read_dir(cache_dir()) {
+        for file in files.flatten().map(|f| f.path()) {
+            let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let old = name == id.to_string() || (name.starts_with(&earlier) && !name.ends_with(".part"));
+            if old && file != cached {
+                let _ = std::fs::remove_file(&file);
+            }
+        }
     }
     Ok(bytes)
 }
@@ -123,7 +138,7 @@ fn decode(job: &Job) -> Result<Decoded, String> {
     if job.large
         && let Some(mut frames) = animation(&bytes, job.size)
     {
-        let (first, _) = frames.remove(0);
+        let (first, delay) = frames.remove(0);
         let (width, height) = (first.width(), first.height());
         return Ok(Decoded {
             id: job.id,
@@ -132,6 +147,7 @@ fn decode(job: &Job) -> Result<Decoded, String> {
             width,
             height,
             rgba: first.into_raw(),
+            delay,
             frames: frames
                 .into_iter()
                 .filter(|(f, _)| f.width() == width && f.height() == height)
@@ -153,6 +169,7 @@ fn decode(job: &Job) -> Result<Decoded, String> {
         width: rgba.width(),
         height: rgba.height(),
         rgba: rgba.into_raw(),
+        delay: 0,
         frames: Vec::new(),
     })
 }

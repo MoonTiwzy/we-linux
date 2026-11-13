@@ -728,7 +728,7 @@ impl App {
                 ui.set_sel_image(image.clone());
                 ui.set_sel_loaded(true);
                 // An animated preview plays, as in the Windows client.
-                self.frames = std::iter::once((image, 100))
+                self.frames = std::iter::once((image, picture.delay))
                     .chain(picture.frames.into_iter().map(|(rgba, delay)| {
                         let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&rgba, picture.width, picture.height);
                         (Image::from_rgba8(buffer), delay)
@@ -738,7 +738,8 @@ impl App {
                 // The frames of the preview shown before go back to the system.
                 unsafe { malloc_trim(0) };
                 if self.frames.len() > 1 {
-                    self.next_frame();
+                    // The first frame is on the screen: for its own time.
+                    self.arm_frame(picture.delay);
                 } else {
                     self.frames.clear();
                 }
@@ -780,6 +781,10 @@ impl App {
         if let Some(ui) = self.ui() {
             ui.set_sel_image(image);
         }
+        self.arm_frame(delay);
+    }
+
+    fn arm_frame(&mut self, delay: u32) {
         self.frame_timer.start(TimerMode::SingleShot, std::time::Duration::from_millis(u64::from(delay)), || {
             APP.with(|slot| {
                 if let Some(app) = slot.borrow().as_ref()
@@ -948,36 +953,35 @@ impl App {
                 options: ModelRc::new(VecModel::from(
                     property.options.iter().map(|(label, _)| SharedString::from(label.as_str())).collect::<Vec<_>>(),
                 )),
-                index: property.options.iter().position(|(_, v)| v == value || v.to_string().trim_matches('"') == value.to_string().trim_matches('"')).map_or(-1, |i| i as i32),
+                index: property.options.iter().position(|(_, v)| props::same(v, value)).map_or(-1, |i| i as i32),
                 swatch: Color::from_rgb_u8(r, g, b),
             });
         }
         ui.set_props(ModelRc::new(VecModel::from(rows)));
     }
 
-    /// The user changed the property in row `row`: keep it, tell the running
-    /// engines (when this wallpaper is the one playing) and redraw.
+    /// The user changed the property in row `row`: keep it, tell the engines
+    /// that play this wallpaper (on every monitor or on one) and redraw.
     fn set_property(&mut self, row: usize, value: Value) {
         let Some(card) = self.selected_card() else { return };
         let Some(property) = self.shown_properties.get(row).and_then(|&i| self.properties.get(i)).cloned() else { return };
-        if value == property.default {
+        if props::same(&value, &property.default) {
             self.overrides.remove(&property.name);
         } else {
             self.overrides.insert(property.name.clone(), value.clone());
         }
         props::save_overrides(card.id, &self.overrides);
-        if self.dir_of(&card).is_some_and(|dir| Some(dir) == self.current) {
-            props::tell_engines(&property.name, &value);
+        if let Some(dir) = self.dir_of(&card) {
+            props::tell_engines(&dir, &property.name, &value);
         }
         self.show_properties();
     }
 
     fn reset_properties(&mut self) {
         let Some(card) = self.selected_card() else { return };
-        let playing = self.dir_of(&card).is_some_and(|dir| Some(dir) == self.current);
-        for property in &self.properties {
-            if playing && self.overrides.contains_key(&property.name) {
-                props::tell_engines(&property.name, &property.default);
+        if let Some(dir) = self.dir_of(&card) {
+            for property in self.properties.iter().filter(|p| self.overrides.contains_key(&p.name)) {
+                props::tell_engines(&dir, &property.name, &property.default);
             }
         }
         self.overrides.clear();
@@ -1003,6 +1007,9 @@ impl App {
         if self.busy.insert(card.id) {
             self.status(tf!("Unsubscribing from \"{}\"…", "Отписка от «{}»…", card.title));
             let _ = self.steam.send(Command::Unsubscribe(card.id));
+            if self.set_when_ready == Some(card.id) {
+                self.set_when_ready = None;
+            }
             self.show_selection(true);
         }
     }
@@ -1070,6 +1077,16 @@ impl App {
             self.apply();
         } else if self.subscribed.get(&card.id).copied().unwrap_or(0) & steam::SUBSCRIBED == 0 {
             self.subscribe();
+        } else if self.progress.contains_key(&card.id) {
+            // Its download is watched: on the desktop it goes when it lands.
+            self.set_when_ready = Some(card.id);
+            self.status(tf!(
+                "\"{}\" is still downloading: it goes on the desktop when it is here",
+                "«{}» ещё скачиваются: встанут на рабочий стол, как только загрузятся",
+                card.title
+            ));
+        } else {
+            self.status(t("Steam has not downloaded this wallpaper yet", "Steam ещё не скачал эти обои"));
         }
     }
 
@@ -1318,6 +1335,11 @@ impl App {
                     self.progress.insert(id, 0.0);
                     self.status(t("Subscribed, Steam is downloading the wallpaper", "Подписка оформлена, Steam загружает обои"));
                 } else {
+                    self.progress.remove(&id);
+                    // Not to be set by itself whenever it gets to the disk.
+                    if self.set_when_ready == Some(id) {
+                        self.set_when_ready = None;
+                    }
                     self.status(t("Steam did not take the subscription", "Steam не принял подписку"));
                 }
                 self.refresh_marks();
@@ -1325,6 +1347,9 @@ impl App {
             Reply::Unsubscribed { id, ok } => {
                 self.busy.remove(&id);
                 self.progress.remove(&id);
+                if self.set_when_ready == Some(id) {
+                    self.set_when_ready = None;
+                }
                 if ok {
                     self.subscribed.remove(&id);
                     self.status(t("Unsubscribed, Steam will remove the wallpaper from the disk", "Подписка снята, Steam уберёт обои с диска"));
@@ -1573,6 +1598,7 @@ fn command_line() -> Option<i32> {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    steam::init_env();
     if let Some(code) = command_line() {
         std::process::exit(code);
     }

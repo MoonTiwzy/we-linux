@@ -126,8 +126,38 @@ pub fn apply_to(output: &str, path: &Path) -> Result<(), String> {
         )
         .into());
     }
+    // A name that is no monitor's would keep the wallpaper off every desktop.
+    let monitors = monitors();
+    if !monitors.iter().any(|m| m.name == output) {
+        let names = monitors.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(", ");
+        return Err(if names.is_empty() {
+            crate::lang::t(
+                "the monitors are only known on Hyprland: a monitor cannot have its own wallpaper here",
+                "мониторы известны только в Hyprland: здесь монитору свои обои не поставить",
+            )
+            .to_owned()
+        } else {
+            crate::tf!("there is no monitor {output}: there are {names}", "монитора {output} нет: есть {names}")
+        });
+    }
+    // The engine plays a folder or a video; a picture is the static setter's.
+    let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let wallpaper = if path.is_dir() {
+        if !path.join("project.json").is_file() {
+            return Err(format!("{} has no project.json", path.display()));
+        }
+        path.to_owned()
+    } else if VIDEOS.contains(&extension.as_str()) {
+        engine::video_item(path)?
+    } else {
+        return Err(crate::tf!(
+            "{}: one monitor takes a wallpaper folder or a video, not a picture",
+            "{}: одному монитору можно поставить папку обоев или видео, не картинку",
+            path.display()
+        ));
+    };
     let mut desktop = Desktop::load();
-    desktop.outputs.insert(output.to_owned(), path.to_owned());
+    desktop.outputs.insert(output.to_owned(), wallpaper);
     desktop.save()?;
     engine::ensure_daemon()
 }
@@ -267,13 +297,9 @@ impl Playlist {
     }
 
     pub fn save(&self) {
-        let path = playlist_file();
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Ok(json) = serde_json::to_vec_pretty(self) {
-            let _ = std::fs::write(path, json);
-        }
+        // Written whole: the daemon reading half a file would take the
+        // playlist for stopped and go on to the next wallpaper.
+        let _ = write_json(&playlist_file(), self);
     }
 
     /// Names of the saved playlists, newest first.

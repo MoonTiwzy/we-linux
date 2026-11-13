@@ -47,7 +47,9 @@ pub fn runtime_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("WE_LINUX_RUNTIME_DIR") {
         return PathBuf::from(dir);
     }
-    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("we-linux")
+    // Without a runtime directory: in the user's own cache, not in /tmp,
+    // where anyone could have made the folder first.
+    std::env::var_os("XDG_RUNTIME_DIR").map_or_else(|| cache_dir().join("run"), |dir| PathBuf::from(dir).join("we-linux"))
 }
 
 pub fn cache_dir() -> PathBuf {
@@ -82,7 +84,18 @@ pub fn sockets() -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-fn fnv(text: &str) -> u64 {
+/// The control sockets of the engines that show `wallpaper`.
+pub fn sockets_showing(wallpaper: &Path) -> Vec<PathBuf> {
+    specs(&Desktop::load(), &Settings::load())
+        .into_iter()
+        .flatten()
+        .filter(|spec| spec.wallpaper == wallpaper)
+        .map(|spec| runtime_dir().join(spec.key).join("control.sock"))
+        .filter(|socket| socket.exists())
+        .collect()
+}
+
+pub fn fnv(text: &str) -> u64 {
     text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3))
 }
 
@@ -372,7 +385,12 @@ pub fn video_item(video: &Path) -> Result<PathBuf, String> {
     std::os::unix::fs::symlink(&video, &link).map_err(|e| e.to_string())?;
     let title = video.file_stem().and_then(|s| s.to_str()).unwrap_or("video");
     let json = serde_json::json!({ "type": "video", "file": format!("video.{extension}"), "title": title });
-    std::fs::write(dir.join("project.json"), json.to_string()).map_err(|e| e.to_string())?;
+    // Written when it changes only: a still is as new as its project.json,
+    // and the same video set again has the same still.
+    let (project, json) = (dir.join("project.json"), json.to_string());
+    if std::fs::read_to_string(&project).ok().as_deref() != Some(json.as_str()) {
+        std::fs::write(&project, json).map_err(|e| e.to_string())?;
+    }
     Ok(dir)
 }
 
@@ -417,26 +435,42 @@ impl Spec {
     }
 }
 
-fn specs(desktop: &Desktop, settings: &Settings) -> Vec<Spec> {
-    let own: Vec<(&String, &PathBuf)> = desktop.outputs.iter().filter(|(_, p)| p.is_dir()).collect();
-    if settings.mirror || own.is_empty() {
-        return desktop
+/// The engines there should be. None: a monitor has a wallpaper of its own
+/// and Hyprland does not say which monitors there are right now (it is busy,
+/// or restarting): what runs is left as it is until it does.
+fn specs(desktop: &Desktop, settings: &Settings) -> Option<Vec<Spec>> {
+    let everywhere = || -> Vec<Spec> {
+        desktop
             .wallpaper
             .iter()
             .filter(|p| p.is_dir())
             .map(|p| Spec { key: "all".into(), wallpaper: p.clone(), output: None, audio: settings.audio })
-            .collect();
+            .collect()
+    };
+    let own = |name: &str| desktop.outputs.get(name).filter(|p| p.is_dir());
+    if settings.mirror || !desktop.outputs.values().any(|p| p.is_dir()) {
+        return Some(everywhere());
+    }
+    // No monitor that has a wallpaper of its own is there (it was unplugged,
+    // or the monitors are not known: not Hyprland): the wallpaper of all.
+    let monitors = desktop::monitors();
+    if monitors.is_empty() && hyprland() {
+        return None;
+    }
+    if !monitors.iter().any(|m| own(&m.name).is_some()) {
+        return Some(everywhere());
     }
     let mut sounding = settings.audio;
-    desktop::monitors()
+    let specs = monitors
         .into_iter()
         .filter_map(|m| {
-            let wallpaper = desktop.outputs.get(&m.name).filter(|p| p.is_dir()).or(desktop.wallpaper.as_ref())?.clone();
+            let wallpaper = own(&m.name).or(desktop.wallpaper.as_ref())?.clone();
             // Sound plays from one engine only: two would double it.
             let audio = std::mem::take(&mut sounding);
             Some(Spec { key: m.name.clone(), wallpaper, output: Some(m.name), audio })
         })
-        .collect()
+        .collect();
+    Some(specs)
 }
 
 fn spawn(spec: &Spec, settings: &Settings) -> Result<Child, String> {
@@ -583,6 +617,13 @@ pub fn run_daemon() {
         return;
     }
     let (wake, woken) = channel();
+    // Until something changes; an engine that died is looked at again in a
+    // few seconds.
+    let rest = || {
+        let _ = woken.recv_timeout(Duration::from_secs(3));
+        std::thread::sleep(Duration::from_millis(120));
+        while woken.try_recv().is_ok() {}
+    };
     watch_hyprland(wake.clone());
     watch_files(wake);
     std::thread::spawn(desktop::run_playlist);
@@ -597,6 +638,9 @@ pub fn run_daemon() {
     // Short lives in a row, by Spec::signature.
     let mut short_lives: HashMap<String, u32> = HashMap::new();
     let mut desktop_stamp = None;
+    // What the errors file holds (None: not known, it is written anew). The
+    // file is written when this changes only: its time says how new it is.
+    let mut reported: Option<String> = None;
     // What an earlier daemon left: logs and sockets of engines long gone.
     if let Ok(dirs) = std::fs::read_dir(runtime_dir()) {
         for dir in dirs.flatten() {
@@ -639,11 +683,24 @@ pub fn run_daemon() {
             desktop_stamp = stamp;
             broken.clear();
             short_lives.clear();
+            reported = None;
         }
         let covered = if hyprland() { covered_monitors() } else { Vec::new() };
         // Every monitor is fullscreen and the user wants the memory back.
         let hidden = settings.stop_fullscreen && !covered.is_empty() && covered.iter().all(|(_, c)| *c);
-        let want = if hidden { Vec::new() } else { specs(&desktop, &settings) };
+        let want = if hidden {
+            Vec::new()
+        } else if let Some(want) = specs(&desktop, &settings) {
+            want
+        } else {
+            rest();
+            continue;
+        };
+        // What is not asked for any more (other settings, a monitor gone) is
+        // not an error to keep telling of, and gets a new try when asked again.
+        if !hidden {
+            broken.retain(|signature, _| want.iter().any(|s| &s.signature(&settings) == signature));
+        }
         let mut dead: Vec<(String, String)> = Vec::new();
         for (key, engine) in &mut running {
             // An engine whose loader died shows nothing and never will.
@@ -713,10 +770,14 @@ pub fn run_daemon() {
         // (another monitor's) is not told this one's.
         let errors: Vec<String> =
             broken.values().chain(&unstarted).map(|(wallpaper, why)| format!("{}\t{why}", wallpaper.display())).collect();
-        if errors.is_empty() {
-            let _ = std::fs::remove_file(errors_file());
-        } else {
-            let _ = std::fs::write(errors_file(), errors.join("\n"));
+        let report = errors.join("\n");
+        if reported.as_ref() != Some(&report) {
+            if report.is_empty() {
+                let _ = std::fs::remove_file(errors_file());
+            } else {
+                let _ = std::fs::write(errors_file(), &report);
+            }
+            reported = Some(report);
         }
         // Sound and volume changed: the engines are told, nothing restarts.
         if sound.is_some_and(|s| s != (settings.audio, settings.volume))
@@ -769,10 +830,7 @@ pub fn run_daemon() {
                 }
             }
         }
-        // An engine that died is looked at again in a few seconds.
-        let _ = woken.recv_timeout(Duration::from_secs(3));
-        std::thread::sleep(Duration::from_millis(120));
-        while woken.try_recv().is_ok() {}
+        rest();
     }
 }
 
@@ -813,7 +871,8 @@ pub fn stage(wallpaper: &Path) -> Stage {
         procs.flatten().any(|p| {
             std::fs::read(p.path().join("cmdline")).is_ok_and(|c| {
                 let c = String::from_utf8_lossy(&c);
-                c.starts_with("ffmpeg") && c.contains("penguin-engine/video")
+                let program = c.split('\0').next().unwrap_or("");
+                Path::new(program).file_name().is_some_and(|n| n == "ffmpeg") && c.contains("penguin-engine/video")
             })
         })
     });

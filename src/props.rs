@@ -127,6 +127,14 @@ fn loose(v: &Value) -> String {
     }
 }
 
+/// Whether two property values are the same setting: `50` and `50.0` are
+/// (serde_json tells an integer from a float), and so are `1` and `"1"`,
+/// which a combo's choices and its value are written as in turn.
+pub fn same(a: &Value, b: &Value) -> bool {
+    let scalar = |v: &Value| v.is_string() || v.is_number() || v.is_boolean();
+    a == b || (scalar(a) && scalar(b) && loose(a) == loose(b))
+}
+
 /// Whether "name.value == x" (or !=) holds for `values`; anything else: yes.
 pub fn holds(condition: &str, values: &BTreeMap<String, Value>) -> bool {
     let condition = condition.trim();
@@ -175,11 +183,15 @@ pub fn save_overrides(id: u64, values: &BTreeMap<String, Value>) {
     }
 }
 
-/// Tell every running engine the new value of a property.
-pub fn tell_engines(name: &str, value: &Value) {
+/// Tell the engines that show `wallpaper` the new value of a property: the
+/// engine of another monitor has a wallpaper of its own, and a property of
+/// the same name there (every wallpaper has a `schemecolor`) is not this one.
+pub fn tell_engines(wallpaper: &Path, name: &str, value: &Value) {
     let Some(penguinctl) = crate::engine::bin("penguinctl") else { return };
+    // As JSON (a string in its quotes): penguinctl reads the value as JSON
+    // first, so the text "true" or "5" stays a text.
     let text = value.to_string();
-    for socket in crate::engine::sockets() {
+    for socket in crate::engine::sockets_showing(wallpaper) {
         let child = std::process::Command::new(&penguinctl)
             .arg("--socket")
             .arg(&socket)
@@ -218,4 +230,21 @@ pub fn from_hex(text: &str) -> Option<Value> {
     }
     let c = |i: usize| u8::from_str_radix(&digits[i..i + 2], 16).ok().map(|v| f64::from(v) / 255.0);
     Some(Value::String(format!("{:.4} {:.4} {:.4}", c(0)?, c(2)?, c(4)?)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn same_values() {
+        assert!(same(&json!(50), &json!(50.0)));
+        assert!(same(&json!(1), &json!("1")));
+        assert!(same(&json!("0.2 0.4 0.6"), &json!("0.2 0.4 0.6")));
+        assert!(!same(&json!(50), &json!(50.5)));
+        assert!(!same(&json!(true), &json!(false)));
+        assert!(!same(&json!(null), &json!("")));
+        assert!(same(&json!(null), &json!(null)));
+    }
 }

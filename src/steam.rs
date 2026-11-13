@@ -189,12 +189,17 @@ fn u32_at(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
 }
 
+/// Who we are to Steam. Called once, before any thread is started: the
+/// environment is not to be changed while another thread may read it.
+pub fn init_env() {
+    unsafe {
+        std::env::set_var("SteamAppId", APP.to_string());
+        std::env::set_var("SteamGameId", APP.to_string());
+    }
+}
+
 impl Steam {
     pub fn open() -> Result<Self, String> {
-        unsafe {
-            std::env::set_var("SteamAppId", APP.to_string());
-            std::env::set_var("SteamGameId", APP.to_string());
-        }
         let path = steam_api().ok_or(crate::lang::t(
             "libsteam_api.so was not found: install any game with a native Linux version in Steam (a free one will do)",
             "не найден libsteam_api.so: установи в Steam любую игру с нативной версией под Linux (подойдёт бесплатная)",
@@ -431,14 +436,8 @@ pub fn spawn(reply: impl Fn(Reply) + Send + 'static) -> Sender<Command> {
                         }
                     }
                 }
-                let command = match pending.pop() {
-                    Some(c) if steam.is_some() => Some(c),
-                    Some(c) => {
-                        pending.push(c);
-                        None
-                    }
-                    None => None,
-                };
+                // What waited for Steam, in the order it was asked for.
+                let command = if steam.is_some() && !pending.is_empty() { Some(pending.remove(0)) } else { None };
                 let command = match command {
                     Some(c) => Some(c),
                     None => match rx.recv_timeout(Duration::from_millis(100)) {
@@ -482,6 +481,7 @@ pub fn spawn(reply: impl Fn(Reply) + Send + 'static) -> Sender<Command> {
                 if !watched.is_empty() && polled.elapsed() >= Duration::from_millis(500) {
                     polled = Instant::now();
                     let mut landed = false;
+                    let mut lost = Vec::new();
                     watched.retain(|&(id, since)| {
                         let (state, done, total) = s.progress(id);
                         reply(Reply::Progress { id, state, done, total });
@@ -491,8 +491,15 @@ pub fn spawn(reply: impl Fn(Reply) + Send + 'static) -> Sender<Command> {
                         // item without the mark is watched for a while before
                         // it counts as unsubscribed again.
                         let gone = state & SUBSCRIBED == 0 && since.elapsed() > Duration::from_secs(20);
+                        if gone && !finished {
+                            lost.push(id);
+                        }
                         !finished && !gone
                     });
+                    // The subscription did not hold: nothing is coming.
+                    for id in lost {
+                        reply(Reply::Subscribed { id, ok: false });
+                    }
                     if landed {
                         reply(Reply::Subscriptions(s.subscribed()));
                     }
