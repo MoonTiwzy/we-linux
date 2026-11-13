@@ -180,12 +180,18 @@ fn project(dir: &Path) -> serde_json::Value {
         .unwrap_or(serde_json::Value::Null)
 }
 
+fn fps(settings: &Settings) -> i32 {
+    settings.fps.clamp(10, 240)
+}
+
 fn engine_env(command: &mut Command, settings: &Settings) {
     let (width, _) = largest_monitor();
     command
         // Effect masks are halved while that loses nothing; the art is left alone.
         .env("PENGUIN_TEX_MAX", "16384")
         .env("PENGUIN_VIDEO_MAX", width.to_string())
+        // Video frames past the engine's frame rate would be decoded for nothing.
+        .env("PENGUIN_VIDEO_FPS", fps(settings).to_string())
         // A layer's own buffers at the size it reaches the monitor at: a 4K
         // scene on a 1440p monitor takes a third less video memory.
         .env("PENGUIN_TARGET_SCALE", "1")
@@ -485,7 +491,7 @@ fn spawn(spec: &Spec, settings: &Settings) -> Result<Child, String> {
     let log = std::fs::File::create(dir.join("engine.log")).map_err(|e| e.to_string())?;
     let mut command = Command::new(penguind);
     command.arg("--socket").arg(&socket).arg("--assets").arg(assets);
-    command.args(["--fps", &settings.fps.clamp(10, 240).to_string()]);
+    command.args(["--fps", &fps(settings).to_string()]);
     if spec.audio {
         command.args(["--audio", "--volume", &settings.volume.clamp(0, 100).to_string()]);
     }
