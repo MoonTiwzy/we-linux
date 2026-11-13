@@ -28,8 +28,8 @@ self:
     machine.succeed("we-linux --version")
     machine.succeed("we-linux --help | grep -q daemon")
     # The engine comes along on the wrapper's PATH.
-    engine = machine.succeed("grep -o '/nix/store/[^:\" ]*penguin-engine[^:\" ]*/bin' $(readlink -f $(command -v we-linux)) | head -1").strip()
-    for tool in ["penguind", "penguinctl", "scene-viewer"]:
+    engine = machine.succeed("grep -o '/nix/store/[^:\" ]*wepaper[^:\" ]*/bin' $(readlink -f $(command -v we-linux)) | head -1").strip()
+    for tool in ["wepaper"]:
         machine.succeed(f"{engine}/{tool} --help >/dev/null")
 
     machine.succeed("loginctl enable-linger alice")

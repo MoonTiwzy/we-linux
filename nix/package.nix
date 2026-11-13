@@ -10,7 +10,7 @@
   ffmpeg,
   zenity,
   xdg-utils,
-  penguin-engine,
+  wepaper,
 }:
 
 rustPlatform.buildRustPackage {
@@ -40,7 +40,7 @@ rustPlatform.buildRustPackage {
   '';
 
   # The window opens Wayland and fontconfig at run time; Steam's
-  # libsteam_api.so (found in an installed game) wants libstdc++. The engine,
+  # libsteam_api.so (found in an installed game) wants libstdc++. The renderer,
   # ffmpeg (stills of videos) and the file dialog come along on the PATH.
   postFixup = ''
     wrapProgram $out/bin/we-linux \
@@ -54,7 +54,7 @@ rustPlatform.buildRustPackage {
       } \
       --prefix PATH : ${
         lib.makeBinPath [
-          penguin-engine
+          wepaper
           ffmpeg
           zenity
           xdg-utils

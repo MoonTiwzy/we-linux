@@ -3,8 +3,8 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    penguin-engine = {
-      url = "github:MoonTiwzy/penguin-engine/low-footprint";
+    wepaper = {
+      url = "github:MoonTiwzy/wepaper";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -13,7 +13,7 @@
     {
       self,
       nixpkgs,
-      penguin-engine,
+      wepaper,
     }:
     let
       systems = [
@@ -25,7 +25,7 @@
     {
       packages = forAll (pkgs: rec {
         we-linux = pkgs.callPackage ./nix/package.nix {
-          penguin-engine = penguin-engine.packages.${pkgs.stdenv.hostPlatform.system}.default;
+          wepaper = wepaper.packages.${pkgs.stdenv.hostPlatform.system}.default;
         };
         default = we-linux;
       });

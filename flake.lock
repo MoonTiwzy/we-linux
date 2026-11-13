@@ -16,31 +16,9 @@
         "type": "github"
       }
     },
-    "penguin-engine": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 1794448299,
-        "narHash": "sha256-qwmYzRrIJFxUn60cuVY5ayj5f+N7uh5akXm2uSmAhVg=",
-        "owner": "MoonTiwzy",
-        "repo": "penguin-engine",
-        "rev": "6882d940a284ffe78e9ebe63682ca50fa95242c0",
-        "type": "github"
-      },
-      "original": {
-        "owner": "MoonTiwzy",
-        "ref": "low-footprint",
-        "repo": "penguin-engine",
-        "type": "github"
-      }
-    },
     "root": {
       "inputs": {
-        "nixpkgs": "nixpkgs",
-        "penguin-engine": "penguin-engine"
+        "nixpkgs": "nixpkgs"
       }
     }
   },
