@@ -1,0 +1,15 @@
+[package]
+name = "we-linux-ui"
+description = "The window of WE Linux, compiled from Slint. A crate of its own so that it is built once, not on every change to the program."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+accessibility = ["slint/accessibility"]
+
+[dependencies]
+slint.workspace = true
+
+[build-dependencies]
+slint-build = "1.18"

@@ -38,7 +38,7 @@ unsafe extern "C" {
 }
 use steam::{Command, Reply, Sort};
 
-slint::include_modules!();
+use we_linux_ui::*;
 
 const INSTALLED: i32 = 0;
 const RECOMMENDED: i32 = 1;

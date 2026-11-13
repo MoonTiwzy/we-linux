@@ -1,20 +1,41 @@
-[package]
-name = "we-linux"
-description = "Wallpaper Engine workshop browser and library for Linux"
+[workspace]
+members = ["ui"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+[workspace.dependencies]
+# Wayland only: wepaper, which draws the wallpapers, needs Wayland anyway, and the
+# X11 half of the windowing library is a third of the dependencies' build time.
+slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit-wayland", "renderer-software"] }
+
+[package]
+name = "we-linux"
+description = "Wallpaper Engine workshop browser and library for Linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+# Screen reader support. Off by default: it brings in an accessibility stack and a
+# D-Bus implementation, about sixty crates.
+accessibility = ["slint/accessibility", "we-linux-ui/accessibility"]
+
 [dependencies]
-slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-software", "accessibility"] }
+we-linux-ui = { path = "ui" }
+slint.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = "3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
-[build-dependencies]
-slint-build = "1.18"
-
 [profile.release]
-lto = "thin"
 strip = true
+
+# The interface's generated code is glue between properties: optimising it hard
+# buys nothing a user could see and takes most of a release build.
+[profile.release.package.we-linux-ui]
+opt-level = 1
+codegen-units = 256
