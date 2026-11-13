@@ -118,22 +118,14 @@ pub fn apply(path: &Path) -> Result<(), String> {
 
 /// A wallpaper on one monitor only, next to the wallpaper of the rest.
 pub fn apply_to(output: &str, path: &Path) -> Result<(), String> {
-    // One render has one wallpaper: the daemon would never show this one.
-    if Settings::load().mirror {
-        return Err(crate::lang::t(
-            "\"One render for all monitors\" is on: turn it off in the settings to give a monitor its own wallpaper",
-            "включён «Один рендер на все мониторы»: выключи его в настройках, чтобы поставить монитору свои обои",
-        )
-        .into());
-    }
     // A name that is no monitor's would keep the wallpaper off every desktop.
     let monitors = monitors();
     if !monitors.iter().any(|m| m.name == output) {
         let names = monitors.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(", ");
         return Err(if names.is_empty() {
             crate::lang::t(
-                "the monitors are only known on Hyprland: a monitor cannot have its own wallpaper here",
-                "мониторы известны только в Hyprland: здесь монитору свои обои не поставить",
+                "the monitors are not known yet: they are once a wallpaper is on the desktop (or on Hyprland)",
+                "мониторы пока не известны: они появятся, когда на столе будут обои (или в Hyprland)",
             )
             .to_owned()
         } else {
@@ -196,23 +188,23 @@ pub struct Monitor {
 }
 
 pub fn monitors() -> Vec<Monitor> {
-    let Ok(out) = Command::new("hyprctl").args(["monitors", "-j"]).output() else { return Vec::new() };
-    let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { return Vec::new() };
-    json.as_array()
-        .map(|list| {
-            list.iter()
-                .map(|m| Monitor {
-                    name: m["name"].as_str().unwrap_or("").to_owned(),
-                    detail: format!(
-                        "{}x{} @ {:.0} Hz",
-                        m["width"].as_i64().unwrap_or(0),
-                        m["height"].as_i64().unwrap_or(0),
-                        m["refreshRate"].as_f64().unwrap_or(0.0)
-                    ),
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    let hyprland = Command::new("hyprctl").args(["monitors", "-j"]).output().ok().and_then(|out| serde_json::from_slice::<serde_json::Value>(&out.stdout).ok());
+    if let Some(list) = hyprland.as_ref().and_then(|json| json.as_array()) {
+        return list
+            .iter()
+            .map(|m| Monitor {
+                name: m["name"].as_str().unwrap_or("").to_owned(),
+                detail: format!(
+                    "{}x{} @ {:.0} Hz",
+                    m["width"].as_i64().unwrap_or(0),
+                    m["height"].as_i64().unwrap_or(0),
+                    m["refreshRate"].as_f64().unwrap_or(0.0)
+                ),
+            })
+            .collect();
+    }
+    // Not Hyprland: the renderer knows the monitors it draws on.
+    engine::outputs().into_iter().map(|(name, width, height)| Monitor { name, detail: format!("{width}x{height}") }).collect()
 }
 
 pub fn settings_file() -> PathBuf {
@@ -226,8 +218,6 @@ pub struct Settings {
     pub fps: i32,
     /// Videos inside scenes on the GPU instead of the CPU.
     pub video_gpu: bool,
-    /// One render for every monitor (half the work, one pointer).
-    pub mirror: bool,
     pub audio: bool,
     pub volume: i32,
     /// Hyprland: freeze the wallpaper of a monitor that shows a fullscreen
@@ -245,7 +235,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { fps: 60, video_gpu: false, mirror: false, audio: false, volume: 50, pause_fullscreen: true, stop_fullscreen: false, still: true, hook: String::new() }
+        Self { fps: 60, video_gpu: false, audio: false, volume: 50, pause_fullscreen: true, stop_fullscreen: false, still: true, hook: String::new() }
     }
 }
 
@@ -256,12 +246,6 @@ impl Settings {
 
     pub fn save(&self) -> Result<(), String> {
         write_json(&settings_file(), self)
-    }
-
-    /// What an engine is started with: a change of it starts the engines
-    /// again. Sound is not in it: the running engines are told.
-    pub fn engine_signature(&self) -> String {
-        format!("{}|{}|{}", self.fps, self.video_gpu, self.mirror)
     }
 }
 

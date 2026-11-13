@@ -1061,10 +1061,6 @@ impl App {
                 self.applying = None;
                 self.status(tf!("\"{title}\" is taking too long: see `we-linux doctor`", "«{title}» грузятся слишком долго: смотри `we-linux doctor`"));
             }
-            engine::Stage::Preparing => self.status(tf!(
-                "\"{title}\": preparing its video for this monitor, only the first time… {waited} s",
-                "«{title}»: подготовка видео под монитор, только в первый раз… {waited} с"
-            )),
             engine::Stage::Loading => self.status(tf!("\"{title}\": loading…", "«{title}»: загрузка…")),
         }
     }
@@ -1145,8 +1141,7 @@ impl App {
 
     fn show_monitors(&self) {
         let Some(ui) = self.ui() else { return };
-        // One render has one wallpaper: a monitor's own is not shown.
-        let overrides = if Settings::load().mirror { Vec::new() } else { desktop::outputs() };
+        let overrides = desktop::outputs();
         let title = |path: &PathBuf| {
             self.installed
                 .iter()
@@ -1204,7 +1199,6 @@ impl App {
         ui.set_set_lang(i32::from(lang::russian()));
         ui.set_set_fps(settings.fps);
         ui.set_set_video(i32::from(settings.video_gpu));
-        ui.set_set_mirror(settings.mirror);
         ui.set_set_audio(settings.audio);
         ui.set_set_volume(settings.volume);
         ui.set_set_freeze(settings.pause_fullscreen);
@@ -1220,7 +1214,6 @@ impl App {
         let settings = Settings {
             fps: ui.get_set_fps(),
             video_gpu: ui.get_set_video() == 1,
-            mirror: ui.get_set_mirror(),
             audio: ui.get_set_audio(),
             volume: ui.get_set_volume(),
             pause_fullscreen: ui.get_set_freeze(),
@@ -1483,13 +1476,12 @@ fn command_line() -> Option<i32> {
             for (output, path) in &desktop.outputs {
                 say!("{output}: {}", path.display());
             }
-            say!("engines: {}", engine::sockets().len());
+            say!("renderer: {}", if engine::running() { "running" } else { "not running" });
             if let Some(wallpaper) = desktop.wallpaper.as_ref().or(desktop.outputs.values().next()) {
                 say!(
                     "state: {}",
                     match engine::stage(wallpaper) {
                         engine::Stage::Shown => "shown",
-                        engine::Stage::Preparing => "preparing a video (first time only)",
                         engine::Stage::Loading => "loading",
                         engine::Stage::Failed(_) => "failed",
                     }

@@ -1,23 +1,25 @@
 //! `we-linux daemon`: what keeps the wallpaper on the desktop.
 //!
-//! It runs penguin-engine's `penguind` for the wallpaper in `desktop.json`
-//! (one process for every monitor; a process a monitor when one of them has a
-//! wallpaper of its own), starts it again when the wallpaper or the settings
-//! change, and on Hyprland freezes it on a monitor that shows a fullscreen
-//! window (or, when asked, stops it while every monitor does, so a game gets
-//! the video memory). It also gives the desktop a
-//! still of the wallpaper (awww, swww or hyprpaper, when one runs), runs the
-//! user's hook, keeps the engine's layer over the static wallpaper's, and
+//! It runs one `wepaper daemon` (the renderer) and tells it over its control
+//! socket what desktop.json and settings.json say: which wallpaper on which
+//! monitor, with which properties, how loud, how fast. Nothing restarts when a
+//! setting changes. On Hyprland it freezes the wallpaper of a monitor that
+//! shows a fullscreen window (or, when asked, stops the renderer while every
+//! monitor does, so a game gets the video memory). It also gives the desktop
+//! a still of the wallpaper (awww, swww or hyprpaper, when one runs), runs the
+//! user's hook, keeps the renderer's layer over the static wallpaper's, and
 //! steps through the playlist.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{Sender, channel};
 use std::time::{Duration, Instant};
+
+use serde_json::{Value, json};
 
 use crate::desktop::{self, Desktop, Settings};
 
@@ -36,10 +38,10 @@ extern "C" fn on_stop(_: i32) {
     STOP.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// The software video path's mpv options: a quick scaler, three decoder
-/// threads (each holds frames) and no read-ahead.
-const MPV_OPTS: &str = "sws-fast=yes,sws-scaler=fast-bilinear,sws-allow-zimg=no,vd-lavc-threads=3,cache=no,\
-                        demuxer-max-bytes=4MiB,demuxer-max-back-bytes=0,demuxer-readahead-secs=0";
+/// The renderer's binary.
+const ENGINE: &str = "wepaper";
+/// The layer-shell namespace of its surfaces: what compositor rules match.
+const NAMESPACE: &str = "wepaper";
 
 /// Where the daemon's lock, the engines' sockets and their logs are
 /// (WE_LINUX_RUNTIME_DIR names another place: a second daemon for a test).
@@ -59,8 +61,8 @@ pub fn cache_dir() -> PathBuf {
         .join("we-linux")
 }
 
-/// A program of penguin-engine (penguind, penguinctl, scene-viewer): in
-/// $WE_LINUX_ENGINE_DIR, next to this binary, or on the PATH.
+/// A program of the renderer (`wepaper`): in $WE_LINUX_ENGINE_DIR, next to
+/// this binary, or on the PATH.
 pub fn bin(name: &str) -> Option<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(dir) = std::env::var_os("WE_LINUX_ENGINE_DIR") {
@@ -77,22 +79,71 @@ pub fn bin(name: &str) -> Option<PathBuf> {
     dirs.into_iter().map(|d| d.join(name)).find(|p| p.is_file())
 }
 
-/// The control sockets of the running engines.
-pub fn sockets() -> Vec<PathBuf> {
-    std::fs::read_dir(runtime_dir())
-        .map(|dirs| dirs.flatten().map(|d| d.path().join("control.sock")).filter(|s| s.exists()).collect())
-        .unwrap_or_default()
+/// The renderer's control socket.
+pub fn socket() -> PathBuf {
+    runtime_dir().join("wepaper.sock")
 }
 
-/// The control sockets of the engines that show `wallpaper`.
-pub fn sockets_showing(wallpaper: &Path) -> Vec<PathBuf> {
-    specs(&Desktop::load(), &Settings::load())
+/// One request to the renderer and its answer: a line of JSON each way.
+/// The error is the renderer's own words, or that it is not there.
+pub fn call(request: Value) -> Result<Value, String> {
+    let stream = UnixStream::connect(socket()).map_err(|_| "the renderer is not running".to_owned())?;
+    // A renderer that stopped answering must not hang the window.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
+    let mut line = request.to_string();
+    line.push('\n');
+    (&stream).write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+    let mut answer = String::new();
+    BufReader::new(&stream).read_line(&mut answer).map_err(|e| e.to_string())?;
+    let answer: Value = serde_json::from_str(&answer).map_err(|_| "the renderer gave no answer".to_owned())?;
+    if answer["ok"].as_bool() == Some(true) {
+        Ok(answer["value"].clone())
+    } else {
+        Err(answer["error"].as_str().unwrap_or("the renderer refused").to_owned())
+    }
+}
+
+/// Whether the renderer answers.
+pub fn running() -> bool {
+    call(json!({ "cmd": "version" })).is_ok()
+}
+
+/// What the renderer shows: monitor and wallpaper folder.
+pub fn shown() -> Vec<(String, PathBuf)> {
+    let Ok(outputs) = call(json!({ "cmd": "get", "path": "outputs" })) else { return Vec::new() };
+    outputs
+        .as_object()
         .into_iter()
         .flatten()
-        .filter(|spec| spec.wallpaper == wallpaper)
-        .map(|spec| runtime_dir().join(spec.key).join("control.sock"))
-        .filter(|socket| socket.exists())
+        .filter_map(|(name, output)| Some((name.clone(), PathBuf::from(output["wallpaper"]["path"].as_str()?))))
         .collect()
+}
+
+/// The monitors the renderer draws on, with their size: what tells the
+/// monitors apart where the compositor does not (anything but Hyprland).
+pub fn outputs() -> Vec<(String, u32, u32)> {
+    let Ok(outputs) = call(json!({ "cmd": "get", "path": "outputs" })) else { return Vec::new() };
+    outputs
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(name, output)| (name.clone(), output["size"][0].as_u64().unwrap_or(0) as u32, output["size"][1].as_u64().unwrap_or(0) as u32))
+        .collect()
+}
+
+/// Tell the renderer the new value of a property of `wallpaper`, on every
+/// monitor that shows it: another monitor has a wallpaper of its own, and a
+/// property of the same name there (every wallpaper has a `schemecolor`) is
+/// not this one.
+pub fn tell_property(wallpaper: &Path, name: &str, value: &Value) {
+    let (wallpaper, name, value) = (wallpaper.to_owned(), name.to_owned(), value.clone());
+    // Off the interface's thread: a socket is quick, but never instant.
+    std::thread::spawn(move || {
+        for (output, _) in shown().into_iter().filter(|(_, path)| *path == wallpaper) {
+            let path = format!("outputs/{output}/wallpaper/properties/{name}");
+            let _ = call(json!({ "cmd": "set", "path": path, "value": value }));
+        }
+    });
 }
 
 pub fn fnv(text: &str) -> u64 {
@@ -143,8 +194,8 @@ fn covered_monitors() -> Vec<(String, bool)> {
         .collect()
 }
 
-/// The size of the largest monitor (Hyprland), else 4K: videos in scenes are
-/// scaled down to its width and stills are rendered at it.
+/// The size of the largest monitor (Hyprland's, else the renderer's), else
+/// 4K: stills are rendered at it.
 fn largest_monitor() -> (u32, u32) {
     hypr_json("monitors")
         .and_then(|m| {
@@ -153,6 +204,7 @@ fn largest_monitor() -> (u32, u32) {
                 .filter_map(|m| Some((m["width"].as_u64()? as u32, m["height"].as_u64()? as u32)))
                 .max_by_key(|(w, h)| w * h)
         })
+        .or_else(|| outputs().into_iter().map(|(_, w, h)| (w, h)).filter(|(w, h)| w * h > 0).max_by_key(|(w, h)| w * h))
         .unwrap_or((3840, 2160))
 }
 
@@ -164,11 +216,11 @@ fn hypr_layer_rule() {
         return;
     }
     // The Lua config (0.55+), the block syntax (0.53+), the old one.
-    let lua = r#"hl.layer_rule({ match = { namespace = "^(penguin-engine)$" }, order = -1, animation = "fade" })"#;
-    let _ = run("hyprctl", &["eval", lua])
-        || run("hyprctl", &["keyword", "layerrule", "match:namespace ^(penguin-engine)$, order -1, animation fade"])
-        || (run("hyprctl", &["keyword", "layerrule", "order -1, penguin-engine"])
-            && run("hyprctl", &["keyword", "layerrule", "animation fade, penguin-engine"]));
+    let lua = format!(r#"hl.layer_rule({{ match = {{ namespace = "^({NAMESPACE})$" }}, order = -1, animation = "fade" }})"#);
+    let _ = run("hyprctl", &["eval", &lua])
+        || run("hyprctl", &["keyword", "layerrule", &format!("match:namespace ^({NAMESPACE})$, order -1, animation fade")])
+        || (run("hyprctl", &["keyword", "layerrule", &format!("order -1, {NAMESPACE}")])
+            && run("hyprctl", &["keyword", "layerrule", &format!("animation fade, {NAMESPACE}")]));
 }
 
 // ------------------------------------------------------------------ stills
@@ -180,33 +232,8 @@ fn project(dir: &Path) -> serde_json::Value {
         .unwrap_or(serde_json::Value::Null)
 }
 
-fn fps(settings: &Settings) -> i32 {
-    settings.fps.clamp(10, 240)
-}
-
-fn engine_env(command: &mut Command, settings: &Settings) {
-    let (width, _) = largest_monitor();
-    command
-        // Effect masks are halved while that loses nothing; the art is left alone.
-        .env("PENGUIN_TEX_MAX", "16384")
-        .env("PENGUIN_VIDEO_MAX", width.to_string())
-        // Video frames past the engine's frame rate would be decoded for nothing.
-        .env("PENGUIN_VIDEO_FPS", fps(settings).to_string())
-        // A layer's own buffers at the size it reaches the monitor at: a 4K
-        // scene on a 1440p monitor takes a third less video memory.
-        .env("PENGUIN_TARGET_SCALE", "1")
-        .env("PENGUIN_SHARE_VIDEO", "1")
-        .env("MALLOC_ARENA_MAX", "2");
-    if !settings.video_gpu {
-        command.env("WPE_VIDEO", "cpu").env("WPE_MPV_OPTS", MPV_OPTS);
-    }
-    if settings.mirror {
-        command.env("PENGUIN_MIRROR", "1");
-    }
-}
-
-/// A still of a wallpaper, for the static wallpaper under the engine and for
-/// the hook: a frame the engine renders of a scene, the first frame of a
+/// A still of a wallpaper, for the static wallpaper under the renderer and for
+/// the hook: a frame the renderer draws of a scene, the first frame of a
 /// video, else the wallpaper's own preview. Cached.
 pub fn still(wallpaper: &Path) -> Option<PathBuf> {
     let json = project(wallpaper);
@@ -220,7 +247,7 @@ pub fn still(wallpaper: &Path) -> Option<PathBuf> {
         made.is_some() && made >= source
     };
     if kind == "scene"
-        && let (Some(viewer), Some(assets)) = (bin("scene-viewer"), crate::library::assets())
+        && let (Some(engine), Some(assets)) = (bin(ENGINE), crate::library::assets())
     {
         let (w, h) = largest_monitor();
         let out = dir.join(format!("{name}-{w}x{h}.png"));
@@ -229,9 +256,8 @@ pub fn still(wallpaper: &Path) -> Option<PathBuf> {
         }
         let part = dir.join(format!("{name}.{}.part.png", std::process::id()));
         let mut command = Command::new("timeout");
-        command.arg("30").arg(viewer).arg(wallpaper).arg("--assets").arg(assets);
-        command.args(["--size", &format!("{w}x{h}"), "--time", "2", "--frames", "4", "--screenshot"]).arg(&part);
-        engine_env(&mut command, &Settings::load());
+        command.arg("30").arg(engine).arg("render").arg(wallpaper).arg("--assets").arg(assets);
+        command.args(["--size", &format!("{w}x{h}"), "--time", "2", "--frames", "4", "--output"]).arg(&part);
         let done = command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
         if done.is_ok_and(|s| s.success()) && std::fs::rename(&part, &out).is_ok() {
             return Some(out);
@@ -426,88 +452,48 @@ pub fn ensure_daemon() -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// One engine process: what it shows and where.
-struct Spec {
-    key: String,
-    wallpaper: PathBuf,
-    output: Option<String>,
-    audio: bool,
+/// What a monitor is to show: the wallpaper of its own, else the wallpaper of all.
+fn wanted(desktop: &Desktop, monitor: &str) -> Option<PathBuf> {
+    desktop.outputs.get(monitor).filter(|p| p.is_dir()).or(desktop.wallpaper.as_ref().filter(|p| p.is_dir())).cloned()
 }
 
-impl Spec {
-    /// What a running engine was started with; a change starts it again.
-    fn signature(&self, settings: &Settings) -> String {
-        format!("{}|{:?}|{}", self.wallpaper.display(), self.output, settings.engine_signature())
-    }
+/// The user's values of a wallpaper's properties, as the renderer takes them.
+fn properties(wallpaper: &Path) -> Value {
+    let id = wallpaper.file_name().and_then(|n| n.to_str()).and_then(|n| n.parse::<u64>().ok());
+    Value::Object(id.map(crate::props::overrides).unwrap_or_default().into_iter().collect())
 }
 
-/// The engines there should be. None: a monitor has a wallpaper of its own
-/// and Hyprland does not say which monitors there are right now (it is busy,
-/// or restarting): what runs is left as it is until it does.
-fn specs(desktop: &Desktop, settings: &Settings) -> Option<Vec<Spec>> {
-    let everywhere = || -> Vec<Spec> {
-        desktop
-            .wallpaper
-            .iter()
-            .filter(|p| p.is_dir())
-            .map(|p| Spec { key: "all".into(), wallpaper: p.clone(), output: None, audio: settings.audio })
-            .collect()
-    };
-    let own = |name: &str| desktop.outputs.get(name).filter(|p| p.is_dir());
-    if settings.mirror || !desktop.outputs.values().any(|p| p.is_dir()) {
-        return Some(everywhere());
-    }
-    // No monitor that has a wallpaper of its own is there (it was unplugged,
-    // or the monitors are not known: not Hyprland): the wallpaper of all.
-    let monitors = desktop::monitors();
-    if monitors.is_empty() && hyprland() {
-        return None;
-    }
-    if !monitors.iter().any(|m| own(&m.name).is_some()) {
-        return Some(everywhere());
-    }
-    let mut sounding = settings.audio;
-    let specs = monitors
-        .into_iter()
-        .filter_map(|m| {
-            let wallpaper = own(&m.name).or(desktop.wallpaper.as_ref())?.clone();
-            // Sound plays from one engine only: two would double it.
-            let audio = std::mem::take(&mut sounding);
-            Some(Spec { key: m.name.clone(), wallpaper, output: Some(m.name), audio })
-        })
-        .collect();
-    Some(specs)
+/// The settings the renderer is told: a change of them is sent, nothing restarts.
+fn told(settings: &Settings) -> [(&'static str, Value); 4] {
+    [
+        ("fps", json!(settings.fps.clamp(10, 240))),
+        ("mute", json!(!settings.audio)),
+        ("volume", json!(settings.volume.clamp(0, 100))),
+        ("video_hardware", json!(settings.video_gpu)),
+    ]
 }
 
-fn spawn(spec: &Spec, settings: &Settings) -> Result<Child, String> {
-    let penguind = bin("penguind").ok_or("penguind (penguin-engine) is not installed")?;
+fn spawn(settings: &Settings) -> Result<Child, String> {
+    let engine = bin(ENGINE).ok_or("wepaper (the renderer) is not installed")?;
     let assets = crate::library::assets().ok_or("Wallpaper Engine is not installed in Steam: no assets")?;
-    let dir = runtime_dir().join(&spec.key);
+    let dir = runtime_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let socket = dir.join("control.sock");
-    let _ = std::fs::remove_file(&socket);
-    // A new file, not the old one emptied: what reads it sees a new engine.
+    // A new file, not the old one emptied: what reads it sees a new renderer.
     let _ = std::fs::remove_file(dir.join("engine.log"));
     let log = std::fs::File::create(dir.join("engine.log")).map_err(|e| e.to_string())?;
-    let mut command = Command::new(penguind);
-    command.arg("--socket").arg(&socket).arg("--assets").arg(assets);
-    command.args(["--fps", &fps(settings).to_string()]);
-    if spec.audio {
-        command.args(["--audio", "--volume", &settings.volume.clamp(0, 100).to_string()]);
+    // The renderer keeps what it showed last there: ours is in desktop.json,
+    // so it starts with nothing and is told.
+    let state = dir.join("engine-state.json");
+    let _ = std::fs::remove_file(&state);
+    let mut command = Command::new(engine);
+    command.arg("-v").arg("daemon").arg("--socket").arg(socket()).arg("--state").arg(state).arg("--assets").arg(assets);
+    // Its own config file is not ours to read: the settings are told.
+    command.arg("--config").arg(dir.join("engine-config.json"));
+    for (key, value) in told(settings) {
+        command.arg("--set").arg(format!("{key}={value}"));
     }
-    let id = spec.wallpaper.file_name().and_then(|n| n.to_str()).and_then(|n| n.parse::<u64>().ok());
-    for (name, value) in id.map(crate::props::overrides).unwrap_or_default() {
-        command.arg("--property").arg(format!("{name}={value}"));
-    }
-    if let Some(output) = &spec.output {
-        command.args(["--output", output]);
-    }
-    command.arg(&spec.wallpaper);
-    engine_env(&mut command, settings);
-    // The engine keeps what it showed last there: ours is in desktop.json.
-    command.env("XDG_STATE_HOME", &dir);
     command.stdin(Stdio::null()).stdout(log.try_clone().map_err(|e| e.to_string())?).stderr(log);
-    // The engine goes when the daemon does, however that ends.
+    // The renderer goes when the daemon does, however that ends.
     unsafe {
         command.pre_exec(|| {
             prctl(PR_SET_PDEATHSIG, SIGTERM);
@@ -518,7 +504,7 @@ fn spawn(spec: &Spec, settings: &Settings) -> Result<Child, String> {
 }
 
 fn stop(child: &mut Child) {
-    let _ = Command::new("kill").args(["-TERM", &child.id().to_string()]).status();
+    let _ = call(json!({ "cmd": "quit" }));
     for _ in 0..30 {
         if matches!(child.try_wait(), Ok(Some(_))) {
             return;
@@ -529,32 +515,9 @@ fn stop(child: &mut Child) {
     let _ = child.wait();
 }
 
-/// Why the engine of `key` will never show its wallpaper, read off its log:
-/// loading runs on a thread of its own, and when that dies the process
-/// stays, showing nothing.
-fn engine_failure(key: &str) -> Option<String> {
-    let log = std::fs::read_to_string(runtime_dir().join(key).join("engine.log")).ok()?;
-    if log.contains(": playing \"") {
-        return None;
-    }
-    if log.contains("Out of Memory") {
-        return Some("not enough video memory for this wallpaper".to_owned());
-    }
-    log.contains("panicked at").then(|| "the engine crashed loading this wallpaper (see `we-linux doctor`)".to_owned())
-}
-
-/// A running engine.
-struct Engine {
-    /// [`Spec::signature`] it was started with.
-    signature: String,
-    wallpaper: PathBuf,
-    child: Child,
-    since: Instant,
-}
-
-/// An engine that goes sooner than this after its start did not get to work.
+/// A renderer that goes sooner than this after its start did not get to work.
 const SHORT_LIFE: Duration = Duration::from_secs(30);
-/// So many short lives in a row and the engine is not started again.
+/// So many short lives in a row and the renderer is not started again.
 const SHORT_LIVES: u32 = 3;
 
 fn errors_file() -> PathBuf {
@@ -623,7 +586,7 @@ pub fn run_daemon() {
         return;
     }
     let (wake, woken) = channel();
-    // Until something changes; an engine that died is looked at again in a
+    // Until something changes; a renderer that died is looked at again in a
     // few seconds.
     let rest = || {
         let _ = woken.recv_timeout(Duration::from_secs(3));
@@ -635,27 +598,23 @@ pub fn run_daemon() {
     std::thread::spawn(desktop::run_playlist);
     hypr_layer_rule();
 
-    let mut running: HashMap<String, Engine> = HashMap::new();
+    let mut renderer: Option<(Child, Instant)> = None;
     let mut announced: Option<PathBuf> = None;
-    let mut failed = String::new();
-    // What an engine could not show (by Spec::signature), with its wallpaper
-    // and why: not tried again until the user sets something.
-    let mut broken: HashMap<String, (PathBuf, String)> = HashMap::new();
-    // Short lives in a row, by Spec::signature.
-    let mut short_lives: HashMap<String, u32> = HashMap::new();
+    // What could not be shown (monitor and wallpaper) and why: not tried
+    // again until the user sets something.
+    let mut broken: HashMap<(String, PathBuf), String> = HashMap::new();
+    // Why the renderer itself does not run, when it does not.
+    let mut down: Option<String> = None;
+    let mut short_lives = 0;
     let mut desktop_stamp = None;
     // What the errors file holds (None: not known, it is written anew). The
     // file is written when this changes only: its time says how new it is.
     let mut reported: Option<String> = None;
-    // What an earlier daemon left: logs and sockets of engines long gone.
-    if let Ok(dirs) = std::fs::read_dir(runtime_dir()) {
-        for dir in dirs.flatten() {
-            let _ = std::fs::remove_file(dir.path().join("engine.log"));
-            let _ = std::fs::remove_file(dir.path().join("control.sock"));
-        }
-    }
-    // The sound the running engines have: (on, volume).
-    let mut sound: Option<(bool, i32)> = None;
+    // What an earlier daemon left.
+    let _ = std::fs::remove_file(socket());
+    let _ = std::fs::remove_file(runtime_dir().join("engine.log"));
+    // The settings the running renderer has.
+    let mut settings_told: Option<String> = None;
     // Monitors whose wallpaper is frozen under a fullscreen window.
     let mut frozen: HashMap<String, bool> = HashMap::new();
     unsafe {
@@ -663,16 +622,17 @@ pub fn run_daemon() {
         signal(SIGINT, on_stop);
     }
     loop {
-        // Told to go: the engines stop and the desktop gets its picture back.
+        // Told to go: the renderer stops and the desktop gets its picture back.
         if STOP.load(std::sync::atomic::Ordering::Relaxed) {
-            for (_, mut engine) in running.drain() {
-                stop(&mut engine.child);
+            if let Some((mut child, _)) = renderer.take() {
+                stop(&mut child);
             }
             restore_images();
             std::process::exit(0);
         }
         let desktop = Desktop::load();
         let settings = Settings::load();
+        let live = desktop.wallpaper.as_ref().is_some_and(|p| p.is_dir()) || desktop.outputs.values().any(|p| p.is_dir());
         // Nothing live any more: what was there before comes back.
         if desktop.wallpaper.is_none() && desktop.outputs.is_empty() {
             restore_images();
@@ -688,94 +648,118 @@ pub fn run_daemon() {
         if stamp != desktop_stamp {
             desktop_stamp = stamp;
             broken.clear();
-            short_lives.clear();
+            short_lives = 0;
+            down = None;
             reported = None;
         }
         let covered = if hyprland() { covered_monitors() } else { Vec::new() };
         // Every monitor is fullscreen and the user wants the memory back.
         let hidden = settings.stop_fullscreen && !covered.is_empty() && covered.iter().all(|(_, c)| *c);
-        let want = if hidden {
-            Vec::new()
-        } else if let Some(want) = specs(&desktop, &settings) {
-            want
-        } else {
-            rest();
-            continue;
-        };
-        // What is not asked for any more (other settings, a monitor gone) is
-        // not an error to keep telling of, and gets a new try when asked again.
-        if !hidden {
-            broken.retain(|signature, _| want.iter().any(|s| &s.signature(&settings) == signature));
+
+        // A renderer that went on its own is started again (the compositor
+        // may have come back), but not one that goes every time.
+        if let Some((child, since)) = &mut renderer
+            && let Ok(Some(status)) = child.try_wait()
+        {
+            short_lives = if since.elapsed() < SHORT_LIFE { short_lives + 1 } else { 0 };
+            if short_lives >= SHORT_LIVES {
+                down = Some(format!("the renderer keeps exiting ({status}): see `we-linux doctor`"));
+                // No scene to stand in for: the user's own picture is better
+                // than a still of what did not load.
+                restore_images();
+            }
+            renderer = None;
         }
-        let mut dead: Vec<(String, String)> = Vec::new();
-        for (key, engine) in &mut running {
-            // An engine whose loader died shows nothing and never will.
-            if let Some(why) = engine_failure(key) {
-                dead.push((key.clone(), why));
-                continue;
+        if !live || hidden {
+            if let Some((mut child, _)) = renderer.take() {
+                stop(&mut child);
+                let _ = std::fs::remove_file(runtime_dir().join("engine.log"));
             }
-            // An engine that went on its own is started again (the compositor
-            // may have come back), but not one that goes every time.
-            let wanted = want.iter().any(|s| &s.key == key && s.signature(&settings) == engine.signature);
-            if wanted && let Ok(Some(status)) = engine.child.try_wait() {
-                let lives = short_lives.entry(engine.signature.clone()).or_insert(0);
-                *lives = if engine.since.elapsed() < SHORT_LIFE { *lives + 1 } else { 0 };
-                if *lives >= SHORT_LIVES {
-                    dead.push((key.clone(), format!("the engine keeps exiting ({status}): see `we-linux doctor`")));
-                }
-            }
-        }
-        for (key, why) in dead {
-            eprintln!("we-linux: {why}");
-            // Its log stays: `we-linux doctor` shows it.
-            if let Some(mut engine) = running.remove(&key) {
-                stop(&mut engine.child);
-                broken.insert(engine.signature, (engine.wallpaper, why));
-            }
-            let _ = std::fs::remove_file(runtime_dir().join(&key).join("control.sock"));
-            // No scene to stand in for: the user's own picture is better
-            // than a still of what did not load.
-            restore_images();
-        }
-        running.retain(|key, engine| {
-            let keep = want.iter().any(|s| &s.key == key && s.signature(&settings) == engine.signature)
-                && matches!(engine.child.try_wait(), Ok(None));
-            if !keep {
-                stop(&mut engine.child);
-                let _ = std::fs::remove_file(runtime_dir().join(key).join("control.sock"));
-                let _ = std::fs::remove_file(runtime_dir().join(key).join("engine.log"));
-            }
-            keep
-        });
-        // What did not start this round, with its wallpaper.
-        let mut unstarted: Vec<(PathBuf, String)> = Vec::new();
-        for spec in &want {
-            if running.contains_key(&spec.key) || broken.contains_key(&spec.signature(&settings)) {
-                continue;
-            }
-            match spawn(spec, &settings) {
+        } else if renderer.is_none() && short_lives < SHORT_LIVES {
+            match spawn(&settings) {
                 Ok(child) => {
-                    failed.clear();
-                    // A new engine plays on every monitor.
+                    renderer = Some((child, Instant::now()));
+                    down = None;
+                    // A new renderer plays on every monitor, with these settings.
                     frozen.clear();
-                    // It was started with the sound as the settings have it.
-                    sound = Some((settings.audio, settings.volume));
-                    let engine = Engine { signature: spec.signature(&settings), wallpaper: spec.wallpaper.clone(), child, since: Instant::now() };
-                    running.insert(spec.key.clone(), engine);
+                    settings_told = Some(format!("{:?}", told(&settings)));
                 }
                 Err(e) => {
-                    if e != failed {
+                    if down.as_ref() != Some(&e) {
                         eprintln!("we-linux: {e}");
-                        failed.clone_from(&e);
                     }
-                    unstarted.push((spec.wallpaper.clone(), e));
+                    down = Some(e);
                 }
             }
         }
+
+        if renderer.is_some() && running() {
+            // Settings that changed are told; nothing restarts.
+            let now = format!("{:?}", told(&settings));
+            if settings_told.as_ref() != Some(&now) {
+                let all = told(&settings).into_iter().all(|(key, value)| call(json!({ "cmd": "set", "path": format!("config/{key}"), "value": value })).is_ok());
+                if all {
+                    settings_told = Some(now);
+                }
+            }
+            // Each monitor gets what it is to show, when it shows something else.
+            let showing: HashMap<String, PathBuf> = shown().into_iter().collect();
+            for (monitor, _, _) in outputs() {
+                let want = wanted(&desktop, &monitor);
+                if want.as_ref() == showing.get(&monitor) {
+                    continue;
+                }
+                match want {
+                    Some(wallpaper) => {
+                        let key = (monitor.clone(), wallpaper.clone());
+                        if broken.contains_key(&key) {
+                            continue;
+                        }
+                        let request = json!({ "cmd": "show", "wallpaper": wallpaper, "output": monitor, "properties": properties(&wallpaper) });
+                        match call(request) {
+                            Ok(_) => {
+                                frozen.remove(&monitor);
+                            }
+                            Err(why) => {
+                                eprintln!("we-linux: {}: {why}", wallpaper.display());
+                                broken.insert(key, why);
+                                // The monitor keeps what it showed; with nothing there,
+                                // the user's own picture is better than a still.
+                                if !showing.contains_key(&monitor) {
+                                    restore_images();
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        let _ = call(json!({ "cmd": "hide", "output": monitor }));
+                    }
+                }
+            }
+            // A monitor under a fullscreen window keeps its frame: the scene
+            // stops there (no work for nothing) and goes on from that frame after.
+            for (monitor, covered) in &covered {
+                let freeze = settings.pause_fullscreen && *covered;
+                if frozen.get(monitor).copied().unwrap_or(false) == freeze {
+                    continue;
+                }
+                let told = call(json!({ "cmd": if freeze { "pause" } else { "resume" }, "output": monitor })).is_ok();
+                // A monitor the renderer does not have yet is told on the next round.
+                if told {
+                    frozen.insert(monitor.clone(), freeze);
+                }
+            }
+        }
+
         // Every failure with its wallpaper: who asks about another wallpaper
         // (another monitor's) is not told this one's.
-        let errors: Vec<String> =
-            broken.values().chain(&unstarted).map(|(wallpaper, why)| format!("{}\t{why}", wallpaper.display())).collect();
+        let mut errors: Vec<String> = broken.iter().map(|((_, wallpaper), why)| format!("{}\t{why}", wallpaper.display())).collect();
+        if let Some(why) = &down {
+            let wallpapers = desktop.wallpaper.iter().chain(desktop.outputs.values());
+            errors.extend(wallpapers.map(|wallpaper| format!("{}\t{why}", wallpaper.display())));
+        }
+        errors.sort();
+        errors.dedup();
         let report = errors.join("\n");
         if reported.as_ref() != Some(&report) {
             if report.is_empty() {
@@ -785,83 +769,23 @@ pub fn run_daemon() {
             }
             reported = Some(report);
         }
-        // Sound and volume changed: the engines are told, nothing restarts.
-        if sound.is_some_and(|s| s != (settings.audio, settings.volume))
-            && let Some(penguinctl) = bin("penguinctl")
-        {
-            let tell = |key: &str, args: &[&str]| {
-                Command::new(&penguinctl)
-                    .arg("--socket")
-                    .arg(runtime_dir().join(key).join("control.sock"))
-                    .args(args)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status()
-                    .is_ok_and(|s| s.success())
-            };
-            let volume = settings.volume.clamp(0, 100).to_string();
-            // Sound plays from one engine only: the first.
-            let told = want.iter().enumerate().all(|(i, spec)| {
-                let on = settings.audio && i == 0;
-                tell(&spec.key, &["volume", &volume]) && tell(&spec.key, &["audio", if on { "on" } else { "off" }])
-            });
-            if told {
-                sound = Some((settings.audio, settings.volume));
-            }
-        }
-        // A monitor under a fullscreen window keeps its frame: the scene
-        // stops there (no work for nothing) and goes on from that frame after.
-        if let Some(penguinctl) = bin("penguinctl") {
-            for (monitor, covered) in &covered {
-                let freeze = settings.pause_fullscreen && *covered;
-                if frozen.get(monitor).copied().unwrap_or(false) == freeze {
-                    continue;
-                }
-                let key = if running.contains_key(monitor.as_str()) { monitor.as_str() } else { "all" };
-                let socket = runtime_dir().join(key).join("control.sock");
-                let told = socket.exists()
-                    && Command::new(&penguinctl)
-                        .arg("--socket")
-                        .arg(&socket)
-                        .args([if freeze { "pause" } else { "resume" }, "--output", monitor])
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status()
-                        .is_ok_and(|s| s.success());
-                // An engine still loading is told again on the next round.
-                if told {
-                    frozen.insert(monitor.clone(), freeze);
-                }
-            }
-        }
         rest();
     }
 }
 
 /// How far a wallpaper set a moment ago has come.
 pub enum Stage {
-    /// The engine is starting or loading the scene.
+    /// The renderer is starting or loading it.
     Loading,
-    /// ffmpeg scales a scene's video down to the monitor (once a video).
-    Preparing,
-    /// The engine shows it.
+    /// The renderer shows it.
     Shown,
     Failed(String),
 }
 
-/// The stage of `wallpaper`: read off the engines' logs, where an engine
-/// says what it loaded (its folder) and that it plays it.
+/// The stage of `wallpaper`: what the renderer says it shows, and what the
+/// daemon could not get it to show.
 pub fn stage(wallpaper: &Path) -> Stage {
-    let loaded = format!("({})", wallpaper.display());
-    let shown = std::fs::read_dir(runtime_dir())
-        .map(|dirs| dirs.flatten().map(|d| d.path().join("engine.log")).collect::<Vec<_>>())
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|log| std::fs::read_to_string(log).ok())
-        .any(|text| text.contains(&loaded) && text.contains(": playing \""));
-    if shown {
+    if shown().iter().any(|(_, path)| path == wallpaper) {
         return Stage::Shown;
     }
     // An error older than desktop.json is of what was set before: the daemon
@@ -872,17 +796,7 @@ pub fn stage(wallpaper: &Path) -> Stage {
     {
         return Stage::Failed(why);
     }
-    // The engine's ffmpeg writes into its video cache.
-    let preparing = std::fs::read_dir("/proc").is_ok_and(|procs| {
-        procs.flatten().any(|p| {
-            std::fs::read(p.path().join("cmdline")).is_ok_and(|c| {
-                let c = String::from_utf8_lossy(&c);
-                let program = c.split('\0').next().unwrap_or("");
-                Path::new(program).file_name().is_some_and(|n| n == "ffmpeg") && c.contains("penguin-engine/video")
-            })
-        })
-    });
-    if preparing { Stage::Preparing } else { Stage::Loading }
+    Stage::Loading
 }
 
 /// `we-linux doctor`: what a bug report needs, in one paste.
@@ -913,10 +827,11 @@ pub fn doctor() -> String {
         out.push(format!("gpu: {memory}"));
     }
     out.push(String::new());
-    for name in ["penguind", "penguinctl", "scene-viewer"] {
-        out.push(format!("{name}: {}", found(bin(name))));
+    out.push(format!("{ENGINE}: {}", found(bin(ENGINE))));
+    if let Some(version) = bin(ENGINE).and_then(|engine| output(&engine.to_string_lossy(), &["--version"])) {
+        out.push(format!("  {version}"));
     }
-    out.push(format!("ffmpeg: {}", output("ffmpeg", &["-version"]).unwrap_or_else(|| "NOT FOUND (videos inside scenes are not scaled down, no stills of videos)".into())));
+    out.push(format!("ffmpeg: {}", output("ffmpeg", &["-version"]).unwrap_or_else(|| "NOT FOUND (videos are not optimised for the monitor, no stills of videos)".into())));
     out.push(format!("steam libraries: {}", if libraries.is_empty() { "NONE FOUND".to_owned() } else { libraries.iter().map(|l| l.display().to_string()).collect::<Vec<_>>().join(", ") }));
     out.push(format!("wallpaper engine assets: {}", found(crate::library::assets())));
     out.push(format!("wallpapers on disk: {}", crate::library::installed().len()));
@@ -932,19 +847,28 @@ pub fn doctor() -> String {
     for (name, path) in &desktop.outputs {
         out.push(format!("  {name}: {}", path.display()));
     }
-    out.push(format!("engines running: {}", sockets().len()));
+    match call(json!({ "cmd": "version" })) {
+        Ok(version) => {
+            out.push(format!("renderer: running, {} on {}", version["version"].as_str().unwrap_or("?"), version["gpu"].as_str().unwrap_or("?")));
+            for (monitor, path) in shown() {
+                out.push(format!("  {monitor} shows {}", path.display()));
+            }
+            if let Ok(memory) = call(json!({ "cmd": "get", "path": "memory" })) {
+                let mb = |key: &str| memory[key].as_f64().unwrap_or(0.0) / 1048576.0;
+                out.push(format!("  video memory: textures {:.0} MB, buffers {:.0} MB, video {:.0} MB", mb("textures"), mb("buffers"), mb("video")));
+            }
+        }
+        Err(why) => out.push(format!("renderer: {why}")),
+    }
     for (wallpaper, why) in errors() {
         out.push(format!("last error: {why} ({})", wallpaper.display()));
     }
     out.push(format!("settings: {}", std::fs::read_to_string(desktop::settings_file()).map_or_else(|_| "(defaults)".to_owned(), |s| s.split_whitespace().collect::<Vec<_>>().join(" "))));
-    if let Ok(dirs) = std::fs::read_dir(runtime_dir()) {
-        for dir in dirs.flatten() {
-            let Ok(log) = std::fs::read_to_string(dir.path().join("engine.log")) else { continue };
-            out.push(String::new());
-            out.push(format!("--- engine log ({}), last lines ---", dir.file_name().to_string_lossy()));
-            let lines: Vec<&str> = log.lines().collect();
-            out.extend(lines[lines.len().saturating_sub(40)..].iter().map(|l| strip_colours(l)));
-        }
+    if let Ok(log) = std::fs::read_to_string(runtime_dir().join("engine.log")) {
+        out.push(String::new());
+        out.push("--- renderer log, last lines ---".to_owned());
+        let lines: Vec<&str> = log.lines().collect();
+        out.extend(lines[lines.len().saturating_sub(40)..].iter().map(|l| strip_colours(l)));
     }
     out.join("\n")
 }

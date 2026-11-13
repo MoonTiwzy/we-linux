@@ -183,31 +183,9 @@ pub fn save_overrides(id: u64, values: &BTreeMap<String, Value>) {
     }
 }
 
-/// Tell the engines that show `wallpaper` the new value of a property: the
-/// engine of another monitor has a wallpaper of its own, and a property of
-/// the same name there (every wallpaper has a `schemecolor`) is not this one.
+/// Tell the renderer the new value of a property of `wallpaper`.
 pub fn tell_engines(wallpaper: &Path, name: &str, value: &Value) {
-    let Some(penguinctl) = crate::engine::bin("penguinctl") else { return };
-    // As JSON (a string in its quotes): penguinctl reads the value as JSON
-    // first, so the text "true" or "5" stays a text.
-    let text = value.to_string();
-    for socket in crate::engine::sockets_showing(wallpaper) {
-        let child = std::process::Command::new(&penguinctl)
-            .arg("--socket")
-            .arg(&socket)
-            .args(["property", name, &text])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-        // Waited for, off the interface's thread: a child nobody waits for
-        // stays in the process table for as long as the window is open.
-        if let Ok(mut child) = child {
-            std::thread::spawn(move || {
-                let _ = child.wait();
-            });
-        }
-    }
+    crate::engine::tell_property(wallpaper, name, value);
 }
 
 /// "r g b" (0..1 each) -> (r, g, b) 0..255.

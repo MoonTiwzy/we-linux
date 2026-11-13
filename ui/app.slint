@@ -664,7 +664,6 @@ export component AppWindow inherits Window {
 
     in-out property <int> set-fps: 60;
     in-out property <int> set-video;
-    in-out property <bool> set-mirror;
     in-out property <bool> set-audio;
     in-out property <int> set-volume: 50;
     in-out property <bool> set-freeze: true;
@@ -1563,7 +1562,7 @@ export component AppWindow inherits Window {
             }
             Info {
                 y: (parent.height - self.height) / 2;
-                text: L.t("Where videos inside scenes are decoded. Processor: little video memory, more processor load. Graphics card: less processor load, but a 4K video can take about 1 GB of video memory.", "Где декодируются видео внутри сцен. Процессор: мало видеопамяти, больше нагрузка на процессор. Видеокарта: меньше нагрузка на процессор, но 4K-видео может занять около 1 ГБ видеопамяти.");
+                text: L.t("Where videos are decoded. Processor: very little video memory, more processor load. Graphics card: less processor load, a few hundred megabytes of video memory more.", "Где декодируются видео. Процессор: совсем мало видеопамяти, больше нагрузка на процессор. Видеокарта: меньше нагрузка на процессор, на несколько сотен мегабайт больше видеопамяти.");
             }
             Dropdown {
                 horizontal-stretch: 1;
@@ -1572,12 +1571,6 @@ export component AppWindow inherits Window {
             }
         }
         Rectangle { height: 4px; }
-        Option {
-            text: L.t("One render for all monitors", "Один рендер на все мониторы");
-            hint: L.t("The scene is drawn once and shown on every monitor: about half the memory and work, but scripts see one pointer for all monitors.", "Сцена рисуется один раз и показывается на всех мониторах: примерно вдвое меньше памяти и работы, но скрипты видят один курсор на все мониторы.");
-            checked: root.set-mirror;
-            toggled => { root.set-mirror = !root.set-mirror; }
-        }
         Rectangle { height: 10px; }
         Text {
             text: L.t("Fullscreen", "Полный экран");
