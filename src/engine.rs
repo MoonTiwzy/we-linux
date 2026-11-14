@@ -891,7 +891,12 @@ pub fn seen() -> Seen {
     } else {
         (None, 0)
     };
-    Seen { daemon, busy, shown, errors: fresh_errors(), optimising }
+    // Who does not take the wallpaper of every monitor: it is shown when the
+    // rest show it.
+    let desktop = Desktop::load();
+    let mut apart = desktop.apart;
+    apart.extend(desktop.outputs.into_keys());
+    Seen { daemon, busy, shown, errors: fresh_errors(), optimising, apart }
 }
 
 /// The daemon's errors, unless they are older than desktop.json: then they

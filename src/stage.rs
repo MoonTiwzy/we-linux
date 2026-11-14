@@ -33,6 +33,9 @@ pub struct Seen {
     pub errors: Vec<(PathBuf, String)>,
     /// How many videos the renderer is re-encoding into cheaper copies.
     pub optimising: usize,
+    /// The monitors that do not show the wallpaper of every monitor: those with
+    /// one of their own, and those it is not cloned on (a device, usually).
+    pub apart: Vec<String>,
 }
 
 /// A wallpaper that was set: where (a monitor, or all of them), and how long ago.
@@ -73,11 +76,15 @@ impl Phase {
 }
 
 /// Whether the monitors the wallpaper was set on show it: the one asked for,
-/// or every monitor the renderer draws on.
-fn on_target(asked: &Asked, shown: &[(String, PathBuf)]) -> bool {
+/// or every monitor the wallpaper of all goes on (not those in `apart`: they
+/// show their own, whatever was set for the rest).
+fn on_target(asked: &Asked, shown: &[(String, PathBuf)], apart: &[String]) -> bool {
     match &asked.output {
         Some(output) => shown.iter().any(|(name, path)| name == output && *path == asked.wallpaper),
-        None => !shown.is_empty() && shown.iter().all(|(_, path)| *path == asked.wallpaper),
+        None => {
+            let mut cloned = shown.iter().filter(|(name, _)| !apart.contains(name)).peekable();
+            cloned.peek().is_some() && cloned.all(|(_, path)| *path == asked.wallpaper)
+        }
     }
 }
 
@@ -87,7 +94,7 @@ pub fn phase(asked: &Asked, seen: &Seen) -> Phase {
         return Phase::Failed(why.clone());
     }
     if let Some(shown) = &seen.shown
-        && on_target(asked, shown)
+        && on_target(asked, shown, &seen.apart)
     {
         return if seen.optimising > 0 { Phase::Optimising(seen.optimising) } else { Phase::Shown };
     }
@@ -363,6 +370,33 @@ mod tests {
 
     fn seen() -> Seen {
         Seen { daemon: true, shown: showing(&[("DP-1", "old")]), ..Seen::default() }
+    }
+
+    #[test]
+    fn a_monitor_kept_apart_does_not_hold_the_wallpaper_of_the_rest_back() {
+        let rain = asked("rain", None, 5);
+        // A device with a wallpaper of its own, not cloned on: the screens show
+        // what was set for every monitor, and that is all there is to wait for.
+        let with_device = Seen {
+            daemon: true,
+            shown: showing(&[("DP-1", "rain"), ("DP-2", "rain"), ("panel", "own")]),
+            apart: vec!["panel".to_owned()],
+            ..Seen::default()
+        };
+        assert_eq!(phase(&rain, &with_device), Phase::Shown);
+        // Without the word that it is apart it would be waited for.
+        assert_eq!(phase(&rain, &Seen { apart: Vec::new(), ..with_device.clone() }), Phase::Loading);
+        // A screen that still shows the old one is waited for.
+        let behind = Seen {
+            shown: showing(&[("DP-1", "rain"), ("DP-2", "old"), ("panel", "own")]),
+            ..with_device.clone()
+        };
+        assert_eq!(phase(&rain, &behind), Phase::Loading);
+        // Nothing but monitors kept apart: nothing shows it.
+        let only = Seen { shown: showing(&[("panel", "own")]), ..with_device.clone() };
+        assert_eq!(phase(&rain, &only), Phase::Loading);
+        // Set on the device itself, it is the device that counts.
+        assert_eq!(phase(&asked("own", Some("panel"), 1), &with_device), Phase::Shown);
     }
 
     #[test]
