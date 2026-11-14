@@ -1,59 +1,29 @@
-// we-linux: окно по раскладке Wallpaper Engine. Шапка с монитором, вкладки
-// «Установлено / Рекомендации / Мастерская», поиск, фильтры слева, сетка
-// превью со страницами, карточка обоев справа, плейлист и нижние кнопки.
+// WE Linux: the window, laid out like Wallpaper Engine's. A title bar; the monitor;
+// the tabs "Installed / Discover / Workshop"; search, filters at the left, the grid
+// with its pages; the wallpaper's card at the right; the playlist and the buttons below.
 
-import { ScrollView, LineEdit, Slider } from "std-widgets.slint";
+import { Theme, L, Tip } from "theme.slint";
+import { Icons, Icon, Glyph } from "icons.slint";
+import { Btn, Check, Caret, DropList, Field, Rail, Scroll, GroupBox, Ruled, Link, Hint, Menu, MenuEntry, Header } from "widgets.slint";
+import { Item, PageButton, Prop, Tile, Pager, PropRow, SourceTab } from "parts.slint";
+import { MonitorEntry, MonitorPanel } from "monitors.slint";
+import { SettingsView, SettingsValues, PluginEntry } from "settings.slint";
 
-// The interface language: every text is written in both, the window picks.
-export global L {
-    in-out property <bool> russian;
-    pure public function t(english: string, russian-text: string) -> string {
-        return self.russian ? russian-text : english;
-    }
-}
+export { L, Tip, Theme, Icons, Glyph, Item, PageButton, Prop, MonitorEntry, SettingsValues, PluginEntry, MenuEntry }
 
-// The hint of the (i) the pointer is over: drawn by the window, over everything.
-export global Tip {
-    in-out property <string> text;
-    in-out property <length> x;
-    in-out property <length> y;
-}
-
-export global Theme {
-    out property <color> bg: #22262b;
-    out property <color> well: #191c20;
-    out property <color> button: #2d3339;
-    out property <color> button-hover: #39414a;
-    out property <color> border: #4b535d;
-    out property <color> line: #3a4149;
-    out property <color> text: #ffffff;
-    out property <color> dim: #b6bdc7;
-    out property <color> faint: #7d8590;
-    out property <color> accent: #2d8ceb;
-    out property <color> accent-hover: #4a9ef0;
-    out property <color> filtered: #e8a13a;
-    out property <color> ok: #6fcf5a;
-    out property <color> danger: #e5534b;
-}
-
-export struct Item {
-    title: string,
-    image: image,
-    loaded: bool,
-    kind: string,
-    /// "4K", "HDR", "4K HDR" or "".
-    badge: string,
-    approved: bool,
-    subscribed: bool,
-    favorite: bool,
-    current: bool,
-    /// 0..1 while it downloads, -1 otherwise.
-    progress: float,
-}
-
+/// A line of a filter group: a box (kind 0), a divider (1), or a heading
+/// with "Все" and "Ничего" for its sub-group (2).
 export struct FilterOption {
     label: string,
     checked: bool,
+    kind: int,
+    section: int,
+    /// The index of the box among its group's (what a click toggles).
+    choice: int,
+    /// "Показать только" marks its boxes with an icon in a colour.
+    icon: Glyph,
+    tint: color,
+    usable: bool,
 }
 
 export struct FilterGroup {
@@ -70,502 +40,28 @@ export struct FilterGroup {
     options: [FilterOption],
 }
 
-export struct PageButton {
-    label: string,
-    page: int,
-    current: bool,
-}
-
-/// One user property of the selected wallpaper.
-/// kind: 0 bool, 1 slider, 2 color, 3 combo, 4 text input, 5 label, 6 group.
-export struct Prop {
-    label: string,
-    kind: int,
-    on: bool,
-    number: float,
-    min: float,
-    max: float,
-    text: string,
-    options: [string],
-    index: int,
-    swatch: color,
+/// A row of "Рекомендации": its title and its wallpapers, `count` of the
+/// grid's items from `first`.
+export struct ExploreRow {
+    title: string,
+    first: int,
+    count: int,
 }
 
 export struct PlaylistEntry {
     title: string,
     image: image,
     loaded: bool,
+    /// It is the wallpaper selected in the grid.
+    selected: bool,
 }
 
-export struct MonitorEntry {
-    name: string,
-    detail: string,
-    wallpaper: string,
-}
-
-global Icons {
-    out property <string> check: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z";
-    out property <string> right: "M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z";
-    out property <string> down: "M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z";
-    out property <string> caret: "M7 10l5 5 5-5z";
-    out property <string> filter: "M3 5h2v2H3V5zm4 0h14v2H7V5zM3 11h2v2H3v-2zm4 0h14v2H7v-2zM3 17h2v2H3v-2zm4 0h14v2H7v-2z";
-    out property <string> reset: "M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z";
-    out property <string> save: "M17 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z";
-    out property <string> compass: "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm2.19 12.19L6 18l3.81-8.19L18 6l-3.81 8.19zM12 10.9a1.1 1.1 0 1 0 0 2.2 1.1 1.1 0 0 0 0-2.2z";
-    out property <string> steam: "M12 2a10 10 0 0 0-9.96 9.04l5.35 2.21a2.83 2.83 0 0 1 1.6-.49l.16.01 2.38-3.45v-.05a3.77 3.77 0 1 1 3.77 3.77h-.09l-3.39 2.42.01.13a2.83 2.83 0 0 1-5.6.56l-3.83-1.58A10 10 0 1 0 12 2z";
-    out property <string> phone: "M17 1.01L7 1c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-1.99-2-1.99zM17 19H7V5h10v14z";
-    out property <string> monitor: "M21 2H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h7v2H8v2h8v-2h-2v-2h7c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H3V4h18v12z";
-    out property <string> gear: "M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.48.48 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z";
-    out property <string> search: "M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z";
-    out property <string> trophy: "M19 5h-2V3H7v2H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94A5.01 5.01 0 0 0 11 15.9V19H7v2h10v-2h-4v-3.1a5.01 5.01 0 0 0 3.61-2.96C19.08 12.63 21 10.55 21 8V7c0-1.1-.9-2-2-2zM5 8V7h2v3.82C5.84 10.4 5 9.3 5 8zm14 0c0 1.3-.84 2.4-2 2.82V7h2v1z";
-    out property <string> folder: "M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z";
-    out property <string> sliders: "M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z";
-    out property <string> plus: "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z";
-    out property <string> tools: "M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z";
-    out property <string> upload: "M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z";
-    out property <string> star: "M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z";
-    out property <string> close: "M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z";
-    out property <string> image: "M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z";
-}
-
-component Icon inherits Path {
-    in property <string> icon;
-    in property <color> tint: Theme.text;
-    commands: icon;
-    fill: tint;
-    viewbox-width: 24;
-    viewbox-height: 24;
-    width: 16px;
-    height: 16px;
-}
-
-// Кнопка Wallpaper Engine: тёмная с рамкой, синяя когда главная или активная.
-component WeButton inherits Rectangle {
-    in property <string> text;
-    in property <string> icon;
-    in property <bool> primary;
-    in property <bool> enabled: true;
-    in property <bool> caret;
-    in property <length> font: 15px;
-    callback clicked;
-    horizontal-stretch: 0;
-    height: 28px;
-    min-width: lay.preferred-width;
-    border-radius: 2px;
-    border-width: primary ? 0 : 1px;
-    border-color: Theme.border;
-    opacity: enabled ? 1 : 0.45;
-    background: primary ? (ta.has-hover && enabled ? Theme.accent-hover : Theme.accent)
-        : ta.has-hover && enabled ? Theme.button-hover : Theme.button;
-    lay := HorizontalLayout {
-        padding-left: 8px;
-        padding-right: 8px;
-        spacing: 5px;
-        alignment: center;
-        if root.icon != "": Icon {
-            y: (parent.height - self.height) / 2;
-            icon: root.icon;
-        }
-        if root.text != "": Text {
-            text: root.text;
-            color: Theme.text;
-            font-size: root.font;
-            vertical-alignment: center;
-        }
-        if root.caret: Icon {
-            y: (parent.height - self.height) / 2;
-            icon: Icons.caret;
-        }
-    }
-    ta := TouchArea {
-        enabled: root.enabled;
-        clicked => { root.clicked(); }
-    }
-}
-
-component Check inherits Rectangle {
-    in property <string> text;
-    in property <string> icon;
-    in property <color> icon-tint: Theme.text;
-    in property <bool> checked;
-    callback toggled;
-    min-height: 21px;
-    HorizontalLayout {
-        spacing: 7px;
-        alignment: start;
-        Rectangle {
-            y: (parent.height - self.height) / 2;
-            width: 14px;
-            height: 14px;
-            border-radius: 2px;
-            border-width: 1px;
-            border-color: Theme.accent;
-            background: root.checked ? Theme.accent : Theme.well;
-            if root.checked: Icon {
-                x: 0px;
-                y: 0px;
-                width: 14px;
-                height: 14px;
-                icon: Icons.check;
-            }
-        }
-        if root.icon != "": Icon {
-            y: (parent.height - self.height) / 2;
-            width: 15px;
-            height: 15px;
-            icon: root.icon;
-            tint: root.icon-tint;
-        }
-        Text {
-            text: root.text;
-            color: Theme.text;
-            font-size: 13px;
-            vertical-alignment: center;
-            wrap: word-wrap;
-        }
-    }
-    ta := TouchArea {
-        clicked => { root.toggled(); }
-    }
-}
-
-// Выпадающий список в стиле WE.
-component Dropdown inherits Rectangle {
-    in property <[string]> options;
-    in-out property <int> index;
-    callback selected(int);
-    height: 30px;
-    border-radius: 2px;
-    border-width: 1px;
-    border-color: Theme.border;
-    background: ta.has-hover ? Theme.button-hover : Theme.button;
-    Text {
-        x: 10px;
-        width: parent.width - 34px;
-        text: root.index >= 0 && root.index < root.options.length ? root.options[root.index] : "";
-        color: Theme.text;
-        font-size: 14px;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-        overflow: elide;
-    }
-    Icon {
-        x: parent.width - 22px;
-        y: (parent.height - self.height) / 2;
-        icon: Icons.caret;
-    }
-    ta := TouchArea {
-        clicked => { popup.show(); }
-    }
-    popup := PopupWindow {
-        x: 0;
-        y: root.height;
-        width: root.width;
-        Rectangle {
-            border-width: 1px;
-            border-color: Theme.border;
-            background: Theme.well;
-            VerticalLayout {
-                padding: 1px;
-                for option[i] in root.options: Rectangle {
-                    height: 28px;
-                    background: row.has-hover ? Theme.accent : i == root.index ? Theme.button-hover : transparent;
-                    Text {
-                        x: 10px;
-                        width: parent.width - 20px;
-                        text: option;
-                        color: Theme.text;
-                        font-size: 14px;
-                        vertical-alignment: center;
-                        overflow: elide;
-                    }
-                    row := TouchArea {
-                        clicked => {
-                            root.index = i;
-                            root.selected(i);
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-component Cell inherits Rectangle {
-    in property <Item> item;
-    in property <bool> selected;
-    callback clicked;
-    callback activated;
-    frame := Rectangle {
-        x: 2px;
-        y: 2px;
-        width: parent.width - 5px;
-        height: parent.height - 5px;
-        background: #101215;
-        clip: true;
-        if !root.item.loaded: Icon {
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            width: 34px;
-            height: 34px;
-            icon: Icons.image;
-            tint: #ffffff18;
-        }
-        Image {
-            width: parent.width;
-            height: parent.height;
-            source: root.item.image;
-            image-fit: cover;
-            opacity: root.item.loaded ? 1 : 0;
-            animate opacity { duration: 150ms; }
-        }
-        // Название на полупрозрачной полосе, как в WE.
-        Rectangle {
-            y: parent.height - self.height;
-            height: max(26px, name.preferred-height + 10px);
-            background: #000000a0;
-            name := Text {
-                x: 6px;
-                y: (parent.height - self.height) / 2;
-                width: parent.width - 12px;
-                text: root.item.title;
-                color: Theme.text;
-                font-size: 12px;
-                horizontal-alignment: center;
-                wrap: word-wrap;
-                max-height: 32px;
-                overflow: elide;
-            }
-        }
-        HorizontalLayout {
-            x: 3px;
-            y: 3px;
-            height: 18px;
-            alignment: start;
-            spacing: 3px;
-            if root.item.approved: Rectangle {
-                width: 20px;
-                background: #2e8b3a;
-                border-radius: 2px;
-                Icon {
-                    x: 3px;
-                    y: 2px;
-                    width: 14px;
-                    height: 14px;
-                    icon: Icons.trophy;
-                }
-            }
-            if root.item.subscribed: Rectangle {
-                width: 20px;
-                background: #000000b0;
-                border-radius: 2px;
-                Icon {
-                    x: 3px;
-                    y: 2px;
-                    width: 14px;
-                    height: 14px;
-                    icon: Icons.save;
-                }
-            }
-            if root.item.favorite: Rectangle {
-                width: 20px;
-                background: #000000b0;
-                border-radius: 2px;
-                Icon {
-                    x: 3px;
-                    y: 2px;
-                    width: 14px;
-                    height: 14px;
-                    icon: Icons.star;
-                    tint: #ffd24a;
-                }
-            }
-            if root.item.current: Rectangle {
-                width: now.preferred-width + 10px;
-                background: Theme.accent;
-                border-radius: 2px;
-                now := Text {
-                    x: 5px;
-                    y: (parent.height - self.height) / 2;
-                    text: L.t("on desktop", "на столе");
-                    color: Theme.text;
-                    font-size: 11px;
-                    font-weight: 700;
-                }
-            }
-        }
-        if root.item.badge != "": Rectangle {
-            x: parent.width - self.width - 3px;
-            y: 3px;
-            width: badge.preferred-width + 8px;
-            height: 16px;
-            border-radius: 2px;
-            background: #e0a020;
-            badge := Text {
-                x: 4px;
-                y: (parent.height - self.height) / 2;
-                text: root.item.badge;
-                color: #1a1a1a;
-                font-size: 10px;
-                font-weight: 800;
-            }
-        }
-        if root.item.progress >= 0: Rectangle {
-            y: parent.height - 4px;
-            height: 4px;
-            background: #00000090;
-            Rectangle {
-                x: 0;
-                width: parent.width * clamp(root.item.progress, 0, 1);
-                background: Theme.accent;
-            }
-        }
-    }
-    Rectangle {
-        x: 0;
-        y: 0;
-        width: parent.width - 1px;
-        height: parent.height - 1px;
-        border-width: 2px;
-        border-color: root.selected ? Theme.accent : ta.has-hover ? #ffffff70 : transparent;
-    }
-    ta := TouchArea {
-        clicked => { root.clicked(); }
-        double-clicked => { root.activated(); }
-    }
-}
-
-component PropRow inherits VerticalLayout {
-    in property <Prop> prop;
-    callback toggled(bool);
-    callback number(float);
-    callback text(string);
-    callback index(int);
-    spacing: 3px;
-    padding-top: prop.kind == 6 ? 6px : 0px;
-    if prop.kind == 6: Text {
-        text: prop.label;
-        color: Theme.text;
-        font-size: 14px;
-        font-weight: 700;
-        wrap: word-wrap;
-    }
-    if prop.kind == 5: Text {
-        text: prop.label;
-        color: Theme.dim;
-        font-size: 12px;
-        wrap: word-wrap;
-    }
-    if prop.kind == 0: Check {
-        text: prop.label;
-        checked: prop.on;
-        toggled => { root.toggled(!prop.on); }
-    }
-    if prop.kind >= 1 && prop.kind <= 4: Text {
-        text: prop.label;
-        color: Theme.text;
-        font-size: 13px;
-        wrap: word-wrap;
-    }
-    if prop.kind == 1: HorizontalLayout {
-        spacing: 8px;
-        Slider {
-            horizontal-stretch: 1;
-            minimum: prop.min;
-            maximum: prop.max;
-            value: prop.number;
-            released(value) => { root.number(value); }
-        }
-        Text {
-            width: 46px;
-            text: round(prop.number * 100) / 100;
-            color: Theme.dim;
-            font-size: 12px;
-            horizontal-alignment: right;
-            vertical-alignment: center;
-        }
-    }
-    if prop.kind == 2: HorizontalLayout {
-        spacing: 8px;
-        Rectangle {
-            width: 30px;
-            height: 26px;
-            border-radius: 2px;
-            border-width: 1px;
-            border-color: Theme.border;
-            background: prop.swatch;
-        }
-        LineEdit {
-            horizontal-stretch: 1;
-            text: prop.text;
-            placeholder-text: "#rrggbb";
-            accepted(text) => { root.text(text); }
-        }
-    }
-    if prop.kind == 3: Dropdown {
-        options: prop.options;
-        index: prop.index;
-        selected(i) => { root.index(i); }
-    }
-    if prop.kind == 4: LineEdit {
-        text: prop.text;
-        accepted(text) => { root.text(text); }
-    }
-}
-
-// (i): a hint that shows while the pointer is over it.
-component Info inherits Rectangle {
-    in property <string> text;
-    width: 16px;
-    height: 16px;
-    border-radius: 8px;
-    border-width: 1px;
-    border-color: ta.has-hover ? Theme.accent : Theme.faint;
-    Text {
-        text: "i";
-        color: ta.has-hover ? Theme.accent : Theme.dim;
-        font-size: 11px;
-        font-weight: 600;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-    ta := TouchArea {
-        changed has-hover => {
-            if self.has-hover {
-                Tip.text = root.text;
-                Tip.x = root.absolute-position.x;
-                Tip.y = root.absolute-position.y + 22px;
-            } else if Tip.text == root.text {
-                Tip.text = "";
-            }
-        }
-    }
-}
-
-// A checkbox with its hint.
-component Option inherits HorizontalLayout {
-    in property <string> text;
-    in property <string> hint;
-    in property <bool> checked;
-    callback toggled;
-    spacing: 8px;
-    alignment: start;
-    Check {
-        text: root.text;
-        checked: root.checked;
-        toggled => { root.toggled(); }
-    }
-    Info {
-        y: (parent.height - self.height) / 2;
-        text: root.hint;
-    }
-}
-
+// A dialog over the window: dimmed behind, a titled panel in the middle.
 component Dialog inherits Rectangle {
     in property <string> title;
     in property <length> panel-width: 520px;
     callback closed;
-    background: #000000a0;
+    background: #00000099;
     TouchArea {
         clicked => { root.closed(); }
     }
@@ -573,37 +69,41 @@ component Dialog inherits Rectangle {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         width: root.panel-width;
-        height: min(parent.height - 80px, body.preferred-height + 54px);
+        height: min(parent.height - 80px, body.preferred-height + 56px);
         background: Theme.bg;
         border-width: 1px;
-        border-color: Theme.border;
+        border-color: Theme.primary;
         TouchArea { }
         Text {
-            x: 16px;
-            y: 12px;
+            y: 5px;
+            width: parent.width;
             text: root.title;
             color: Theme.text;
-            font-size: 20px;
+            font-size: 15.4px;
+            horizontal-alignment: center;
         }
         Rectangle {
-            x: parent.width - 34px;
-            y: 10px;
-            width: 24px;
-            height: 24px;
-            background: cross.has-hover ? Theme.button-hover : transparent;
+            x: parent.width - 45px;
+            y: 1px;
+            width: 44px;
+            height: 28px;
+            background: cross.has-hover ? #e04343 : transparent;
+            animate background { duration: 200ms; }
             Icon {
-                x: 4px;
-                y: 4px;
-                icon: Icons.close;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                glyph: Icons.xmark;
+                size: 14px;
+                tint: cross.has-hover ? Theme.white : Theme.field-text;
             }
             cross := TouchArea {
                 clicked => { root.closed(); }
             }
         }
         body := VerticalLayout {
-            x: 16px;
-            y: 46px;
-            width: parent.width - 32px;
+            x: 18px;
+            y: 40px;
+            width: parent.width - 36px;
             alignment: start;
             @children
         }
@@ -612,24 +112,44 @@ component Dialog inherits Rectangle {
 
 export component AppWindow inherits Window {
     title: "WE Linux";
-    preferred-width: 1660px;
-    preferred-height: 930px;
-    min-width: 1100px;
-    min-height: 680px;
+    no-frame: true;
+    preferred-width: 1656px;
+    preferred-height: 931px;
+    min-width: root.mini ? 340px : 1000px;
+    min-height: 640px;
     background: Theme.bg;
-    default-font-family: "Noto Sans";
+    default-font-family: Theme.font;
+    default-font-size: Theme.size;
+
+    in property <string> caption: "WE Linux";
+    in-out property <bool> mini;
 
     in-out property <int> tab: 2;
-    in property <string> monitor-title: L.t("All monitors", "Все мониторы");
+    in property <string> monitor-title: L.t("Display", "Монитор");
+    /// The monitor row over the tabs: shown where there is a monitor to choose.
+    in property <bool> monitor-row;
+    /// "(5 из 109)" or "(Отфильтровано)" after "Фильтры", when the filters leave something out.
+    in property <string> filter-count;
+    /// The workshop sorts on its side: no direction to turn.
+    in property <bool> workshop-sorting;
     in property <[Item]> items;
     in property <int> selected: -1;
     in property <bool> loading;
     in property <string> error;
     in property <string> status;
+    /// The status reads as an error (red, as the original's workshop error).
+    in property <bool> status-error;
+    property <bool> status-shown;
+    changed status => {
+        root.status-shown = root.status != "";
+        status-timer.running = false;
+        status-timer.running = root.status != "";
+    }
     in property <bool> steam-ok;
     in-out property <string> search;
     in property <[string]> sort-options;
     in-out property <int> sort-index;
+    in-out property <bool> sort-descending;
     in property <[string]> view-options;
     in-out property <int> view-index;
     in-out property <bool> filters-open: true;
@@ -642,9 +162,14 @@ export component AppWindow inherits Window {
     in property <bool> sel-loaded;
     in property <string> sel-title;
     in property <string> sel-facts;
-    in property <string> sel-tags;
-    in property <float> sel-stars;
-    in property <string> sel-description;
+    in property <[[string]]> sel-tags;
+    /// The rating, in whole stars (0: none yet).
+    in property <int> sel-stars;
+    /// The user's vote: 1 up, -1 down, 0 none.
+    in property <int> sel-vote;
+    in property <string> sel-author;
+    in property <image> sel-avatar;
+    in property <bool> sel-workshop;
     in property <bool> sel-subscribed;
     in property <bool> sel-installed;
     in property <bool> sel-current;
@@ -658,30 +183,67 @@ export component AppWindow inherits Window {
     in-out property <int> playlist-minutes: 30;
     in-out property <int> playlist-order;
     in property <[string]> playlist-saved;
+    in property <[string]> presets;
 
     in property <[MonitorEntry]> monitors;
+    in property <float> desk-width: 1;
+    in property <float> desk-height: 1;
     in-out property <int> monitor-index: -1;
+    in-out property <bool> monitors-open;
+    in-out property <bool> monitors-on-start: true;
 
-    in-out property <int> set-fps: 60;
-    in-out property <int> set-video;
-    in-out property <bool> set-audio;
-    in-out property <int> set-volume: 50;
-    in-out property <bool> set-freeze: true;
-    in-out property <bool> set-stop;
-    in-out property <bool> set-still: true;
+    in-out property <SettingsValues> settings;
+    in-out property <bool> settings-open;
+    in-out property <int> settings-tab;
+    in property <string> about;
+    in property <[PluginEntry]> plugins;
 
-    /// 0 none, 1 monitors, 2 settings, 3 filter settings, 4 playlist setup, 5 playlist load, 6 mobile.
+    /// 0 none, 3 filter settings, 4 playlist setup, 5 playlist load, 6 mobile,
+    /// 7 load a preset, 8 save a preset, 9 the first run's language,
+    /// 10 load a monitor profile, 11 save one.
     in-out property <int> dialog;
-    /// 0 English, 1 Русский: the settings' language box.
-    in-out property <int> set-lang;
+    /// --show menu=N: a menu opens with the window (1 the view of "Installed",
+    /// 2 "Open wallpaper", 3 a tile's context menu, 4 the sorting).
+    in property <int> debug-menu;
+    in-out property <string> preset-name;
     callback language-picked(int);
+
+    callback window-close();
+    callback window-minimize();
+    callback window-maximize();
+    callback window-drag();
+    callback mini-toggled();
 
     callback tab-changed(int);
     callback view-changed(int);
     callback search-submitted(string);
+    callback search-typed(string);
+    callback open-monitors();
+    /// The notice under the tabs ("Смотрим все обои от …"), with its cross.
+    in property <string> notice;
+    callback notice-closed();
+    /// The monitor chooser's profiles: false load one, true save the desk as one.
+    callback monitor-profiles(bool);
+    in property <[string]> profiles;
+    callback profile-load(int);
+    callback profile-save(string);
+    /// The window blurred, behind the monitor chooser.
+    in property <image> backdrop;
     callback sort-changed(int);
+    callback sort-direction-changed();
     callback filter-toggled(int, int);
     callback filter-group-all(int, bool);
+    /// "Все" / "Ничего" of a sub-group (the resolutions').
+    callback filter-section-all(int, int, bool);
+    /// The age settings of the Steam account, on Steam's site.
+    callback content-preferences();
+    /// The workshop's filter settings: anime shown; the resolutions recommended
+    /// for the monitors (else all), and those of unknown resolution shown.
+    in property <bool> anime-shown: true;
+    callback anime-changed(bool);
+    in property <bool> resolution-recommended;
+    in property <bool> other-resolution: true;
+    callback resolution-changed(bool, bool);
     callback group-toggled(int);
     callback group-shown(int);
     callback filters-reset();
@@ -689,10 +251,17 @@ export component AppWindow inherits Window {
     callback item-selected(int);
     callback item-activated(int);
     callback subscribe();
+    callback vote(bool);
+    callback browse-author();
+    callback open-author();
+    /// The small window's arrows: the wallpaper before (-1) or after (1).
+    callback navigate(int);
     callback unsubscribe();
     callback apply();
     callback favorite();
     callback open-steam();
+    callback copy-link();
+    callback report();
     callback open-folder();
     callback reload();
     callback prop-bool(int, bool);
@@ -700,7 +269,15 @@ export component AppWindow inherits Window {
     callback prop-text(int, string);
     callback prop-index(int, int);
     callback props-reset();
+    callback preset-save(string);
+    callback preset-load(int);
+    callback preset-apply-all();
+    callback preset-share();
     callback playlist-add();
+    /// The selected wallpaper is in the playlist: "Добавить обои" takes it out.
+    in property <bool> sel-in-playlist;
+    callback playlist-toggle-selected();
+    callback playlist-select(int);
     callback playlist-remove(int);
     callback playlist-save();
     callback playlist-load(int);
@@ -708,92 +285,576 @@ export component AppWindow inherits Window {
     callback playlist-stop();
     callback playlist-clear();
     callback monitor-picked(int);
+    callback monitor-cleared(int);
+    callback monitors-on-start-changed(bool);
     callback settings-save();
-    /// The settings dialog opens: its boxes show what is in force.
+    callback settings-reset();
+    /// The settings open: their boxes show what is in force.
     callback settings-shown();
-    callback open-file();
+    /// "Открыть обои": "animated" (a wallpaper folder or a video), "static" (a picture).
+    callback open-file(string);
+    callback open-editor();
     callback accept();
     callback cancel();
 
-    VerticalLayout {
-        padding: 14px;
-        padding-top: 8px;
-        spacing: 8px;
+    property <bool> installed-tab: root.tab == 0;
+    /// The tiles' least and greatest width and their margin: the original's,
+    /// by the window's width and the size picked in the grid's menu.
+    in property <int> icon-size: 1;
+    property <length> tile-min: root.icon-size == 0 ? (root.width >= 1450px ? 128px : 96px)
+        : root.icon-size == 2 ? (root.width >= 2000px ? 230px : root.width >= 1450px ? 200px : 168px)
+        : (root.width >= 2000px ? 200px : root.width >= 1450px ? 160px : root.width >= 1230px ? 140px : 128px);
+    property <length> tile-max: root.icon-size == 0 ? (root.width >= 1450px ? 148px : 128px)
+        : root.icon-size == 2 ? (root.width >= 2000px ? 260px : 250px)
+        : (root.width >= 2000px ? 220px : root.width >= 1450px ? 200px : root.width >= 1230px ? 185px : 168px);
+    property <length> tile-gap: root.icon-size == 0 ? 3px : root.icon-size == 2 ? 6px : root.width >= 1450px ? 6px : 4px;
+    /// The menu of a tile, made when it is asked for.
+    in property <[MenuEntry]> context-entries;
+    in property <[[MenuEntry]]> context-submenus;
+    callback item-context(int);
+    callback visible-changed(int, int);
+    in property <[ExploreRow]> explore-rows;
+    /// The explore tile: 12% of the window, 128 to 168 (200 from 1450 wide).
+    property <length> explore-side: clamp(root.width * 0.12, 128px, root.width >= 1450px ? 200px : 168px);
+    callback context-activated(string);
+    /// The card's width, as the original's by the window's width.
+    property <length> card-width: root.mini ? 300px : root.width >= 1900px ? 400px : root.width <= 950px ? 205px : 320px;
 
-        // ---------------------------------------------------------- монитор
-        HorizontalLayout {
-            height: 40px;
-            spacing: 14px;
-            alignment: start;
-            Text {
-                text: root.monitor-title;
-                color: Theme.text;
-                font-size: 28px;
-                vertical-alignment: center;
+    // The original's keys, while no field has them: the arrows move the
+    // selection through the grid, F10 the small window, F11 maximises,
+    // Delete unsubscribes.
+    keys := FocusScope {
+        width: 0px;
+        height: 0px;
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if (event.text == Key.F10) {
+                root.mini-toggled();
+                return EventResult.accept;
             }
+            if (event.text == Key.F11) {
+                root.window-maximize();
+                return EventResult.accept;
+            }
+            if (root.dialog != 0 || root.settings-open || root.monitors-open) {
+                return EventResult.reject;
+            }
+            if (event.text == Key.LeftArrow) {
+                root.navigate(-1);
+                return EventResult.accept;
+            }
+            if (event.text == Key.RightArrow) {
+                root.navigate(1);
+                return EventResult.accept;
+            }
+            if (event.text == Key.UpArrow) {
+                root.navigate(-root.grid-cols);
+                return EventResult.accept;
+            }
+            if (event.text == Key.DownArrow) {
+                root.navigate(root.grid-cols);
+                return EventResult.accept;
+            }
+            if (event.text == Key.Delete && root.sel-workshop && (root.sel-subscribed || root.sel-installed)) {
+                root.unsubscribe();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+    }
+    /// The grid's columns, for the arrows up and down.
+    property <int> grid-cols: 1;
+
+    // ---------------------------------------------------------------- title bar
+    Rectangle {
+        x: 1px;
+        y: 1px;
+        width: parent.width - 2px;
+        height: 30px;
+        TouchArea {
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                    root.window-drag();
+                }
+            }
+            double-clicked => { root.window-maximize(); }
+        }
+        if !root.mini: Text {
+            y: 4px;
+            width: parent.width;
+            text: root.caption;
+            color: Theme.text;
+            font-size: 15.4px;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+        // What Steam and the desktop are doing, small at the top left, as the
+        // original's workshop status: it goes after five seconds.
+        if !root.mini: HorizontalLayout {
+            x: 18px;
+            y: 3px;
+            height: 13px;
+            spacing: 4px;
+            opacity: status-ta.has-hover ? 1 : root.status-shown ? 0.7 : 0;
+            animate opacity { duration: 200ms; easing: ease; }
             Rectangle {
-                y: (parent.height - self.height) / 2;
-                width: pick.preferred-width + 20px;
-                height: 24px;
-                border-radius: 12px;
-                background: pick-ta.has-hover ? Theme.button-hover : #3a4047;
-                pick := Text {
-                    x: 10px;
+                width: 10px;
+                Icon {
                     y: (parent.height - self.height) / 2;
-                    text: L.t("Choose monitor", "Выбрать монитор");
-                    color: Theme.text;
-                    font-size: 13px;
+                    glyph: Icons.steam;
+                    size: 9.8px;
+                    tint: root.status-error ? Theme.danger : Theme.text;
                 }
-                pick-ta := TouchArea {
-                    clicked => { root.dialog = 1; }
-                }
+            }
+            Text {
+                text: root.status;
+                color: root.status-error ? Theme.danger : Theme.text;
+                font-size: 9.8px;
+                vertical-alignment: center;
+                status-ta := TouchArea { }
             }
         }
+        status-timer := Timer {
+            interval: 5s;
+            running: false;
+            triggered => {
+                root.status-shown = false;
+                self.running = false;
+            }
+        }
+        // Close, maximise, minimise, the small window: right to left.
+        Rectangle {
+            x: parent.width - 44px;
+            width: 44px;
+            height: 28px;
+            background: close.pressed ? #b81e1e : close.has-hover ? #e04343 : transparent;
+            animate background { duration: 200ms; }
+            Path {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 11px;
+                height: 11px;
+                viewbox-width: 11;
+                viewbox-height: 11;
+                commands: "M0.5 0.5 L10.5 10.5 M10.5 0.5 L0.5 10.5";
+                stroke: close.has-hover ? Theme.white : Theme.field-text;
+                stroke-width: 1px;
+            }
+            close := TouchArea {
+                clicked => { root.window-close(); }
+            }
+        }
+        if !root.mini: Rectangle {
+            x: parent.width - 86px;
+            width: 41px;
+            height: 28px;
+            background: bigger.pressed ? #0c59de : bigger.has-hover ? #4183f599 : transparent;
+            animate background { duration: 200ms; }
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 12px;
+                height: 12px;
+                border-radius: 2px;
+                border-width: 1.5px;
+                border-color: bigger.has-hover ? Theme.white : Theme.field-text;
+            }
+            bigger := TouchArea {
+                clicked => { root.window-maximize(); }
+            }
+        }
+        if !root.mini: Rectangle {
+            x: parent.width - 128px;
+            width: 41px;
+            height: 28px;
+            background: smaller.pressed ? #0c59de : smaller.has-hover ? #4183f599 : transparent;
+            animate background { duration: 200ms; }
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2 + 1px;
+                width: 12px;
+                height: 1px;
+                background: smaller.has-hover ? Theme.white : Theme.field-text;
+            }
+            smaller := TouchArea {
+                clicked => { root.window-minimize(); }
+            }
+        }
+        if !root.maximized: Rectangle {
+            x: root.mini ? parent.width - 85px : parent.width - 169px;
+            width: 40px;
+            height: 28px;
+            background: small.pressed ? #0c59de : small.has-hover ? Theme.primary-light : Theme.primary;
+            animate background { duration: 200ms; }
+            Icon {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                glyph: root.mini ? Icons.angles-left : Icons.angles-right;
+                size: 16px;
+                tint: #fefefe;
+            }
+            small := TouchArea {
+                clicked => { root.mini-toggled(); }
+            }
+        }
+    }
 
-        // ---------------------------------------------------------- вкладки
-        VerticalLayout {
+    // ---------------------------------------------------------------- the window's body
+    VerticalLayout {
+        x: 19px;
+        y: 32px;
+        width: parent.width - 38px;
+        height: parent.height - 51px;
+        spacing: 0px;
+
+        HorizontalLayout {
+            vertical-stretch: 1;
             spacing: 0px;
-            HorizontalLayout {
-                height: 28px;
-                spacing: 4px;
-                WeButton {
-                    text: root.view-options.length > 0 ? root.view-options[root.view-index] : L.t("Installed", "Установлено");
-                    icon: Icons.save;
-                    caret: true;
-                    primary: root.tab == 0;
-                    font: 17px;
-                    clicked => {
-                        if (root.tab == 0) {
-                            views.show();
-                        } else {
-                            root.tab = 0;
-                            root.tab-changed(0);
+
+            if !root.mini: VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 0px;
+
+                // ------------------------------------------------ the monitor
+                // Shown where there is a monitor to choose (more than one, or one
+                // so wide it is likely several).
+                if root.monitor-row: Rectangle {
+                    height: 43px;
+                    HorizontalLayout {
+                        y: 0;
+                        alignment: start;
+                        spacing: 15px;
+                        height: 33px;
+                        Text {
+                            text: root.monitor-title;
+                            color: Theme.text;
+                            font-size: 30px;
+                            vertical-alignment: center;
+                        }
+                        Rectangle {
+                            y: 5px;
+                            width: pick.preferred-width + 14px;
+                            height: 26px;
+                            border-radius: 12px;
+                            border-width: 1px;
+                            border-color: pick-ta.has-hover ? Theme.button-hover-border : Theme.button-border;
+                            background: pick-ta.has-hover ? Theme.button-hover : Theme.button;
+                            animate background { duration: 70ms; easing: linear; }
+                            pick := Text {
+                                x: 7px;
+                                y: (parent.height - self.height) / 2;
+                                // Below 1050 wide the pill is a pill only.
+                                text: root.width <= 1050px ? "" : L.t("Choose Display", "Выбрать монитор");
+                                color: Theme.text;
+                                font-size: Theme.size;
+                            }
                         }
                     }
-                    views := PopupWindow {
-                        x: 0;
-                        y: parent.height;
-                        width: 240px;
-                        Rectangle {
-                            border-width: 1px;
-                            border-color: Theme.border;
-                            background: Theme.well;
-                            VerticalLayout {
-                                padding: 1px;
-                                for view[i] in root.view-options: Rectangle {
-                                    height: 28px;
-                                    background: vta.has-hover ? Theme.accent : i == root.view-index ? Theme.button-hover : transparent;
-                                    Text {
-                                        x: 10px;
-                                        text: view;
-                                        color: Theme.text;
-                                        font-size: 14px;
-                                        vertical-alignment: center;
+                    pick-ta := TouchArea {
+                        width: 420px;
+                        clicked => { root.open-monitors(); }
+                    }
+                }
+
+                // ------------------------------------------------ the tabs and the three buttons
+                // Wide: the tabs at the left, the buttons at the right, on the blue line.
+                // Narrower than 1050: the buttons over the tabs, both a third of the row each.
+                Rectangle {
+                    height: root.width <= 1050px ? 66px : 34px;
+                    // The line the tabs stand on.
+                    Rectangle {
+                        y: parent.height - 3px;
+                        height: 3px;
+                        background: Theme.primary;
+                    }
+                    tabs := HorizontalLayout {
+                        y: parent.height - 32px;
+                        height: 29px;
+                        alignment: start;
+                        spacing: root.width <= 1050px ? 0px : 4.7px;
+                        for tab[i] in [
+                            { text: L.t("Installed", "Установлено"), icon: Icons.floppy-disk },
+                            { text: L.t("Discover", "Рекомендации"), icon: Icons.compass },
+                            { text: L.t("Workshop", "Мастерская"), icon: Icons.steam },
+                        ]: Rectangle {
+                            width: root.width <= 1050px ? tabs.width / 3 : one.natural;
+                            one := SourceTab {
+                                x: 0;
+                                width: parent.width;
+                                centered: root.width <= 1050px;
+                                active: root.tab == i;
+                                icon: tab.icon;
+                                text: tab.text;
+                                caret: i == 0;
+                                clicked => {
+                                    if (root.tab != i) {
+                                        root.tab = i;
+                                        root.tab-changed(i);
                                     }
-                                    vta := TouchArea {
-                                        clicked => {
-                                            root.view-index = i;
-                                            root.view-changed(i);
+                                }
+                                // The menu of "Installed" opens under the pointer, as in the original.
+                                entered => {
+                                    if (i == 0) {
+                                        group-menu.show();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // --show menu=1: the menu of "Установлено", open with the window.
+                    Timer {
+                        interval: 1500ms;
+                        running: root.debug-menu == 1;
+                        triggered => {
+                            self.running = false;
+                            group-menu.show();
+                        }
+                    }
+                    group-menu := Menu {
+                        x: 0;
+                        y: tabs.y + 29px;
+                        menu-width: 200px;
+                        entries: [
+                            { label: L.t("Configure Wallpaper", "Настроить обои"), icon: Icons.image, enabled: true, sub: -1, id: "wallpaper" },
+                            { label: L.t("Configure Screensaver", "Настроить заставку"), icon: Icons.moon, enabled: false, sub: -1, id: "screensaver" },
+                        ];
+                        activated(id) => {
+                            if (id == "wallpaper" && root.tab != 0) {
+                                root.tab = 0;
+                                root.tab-changed(0);
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        x: root.width <= 1050px ? 0 : parent.width - self.preferred-width - 1px;
+                        y: root.width <= 1050px ? 1px : 0px;
+                        width: root.width <= 1050px ? parent.width : self.preferred-width;
+                        height: 26px;
+                        spacing: 4px;
+                        for control[i] in [
+                            { text: L.t("Mobile Devices", "Мобильные устройства"), icon: Icons.mobile-screen-button },
+                            { text: L.t("Displays", "Мониторы"), icon: Icons.desktop },
+                            { text: L.t("Settings", "Настройки"), icon: Icons.gear },
+                        ]: Btn {
+                            horizontal-stretch: root.width <= 1050px ? 1 : 0;
+                            pad: root.width <= 1050px ? 15px : 6px;
+                            icon: control.icon;
+                            text: root.width <= 900px ? "" : control.text;
+                            clicked => {
+                                if (i == 0) {
+                                    root.dialog = 6;
+                                } else if (i == 1) {
+                                    root.open-monitors();
+                                } else {
+                                    root.settings-shown();
+                                    root.settings-open = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                Rectangle { height: 6px; }
+
+                // ------------------------------------------------ the original's notice (an author's wallpapers only)
+                if root.notice != "": VerticalLayout {
+                    padding-bottom: 5px;
+                    Rectangle {
+                        height: notice-text.preferred-height + (root.width <= 1050px ? 12px : 32px);
+                        background: #f3d8b1;
+                        border-width: 1px;
+                        border-color: #d27e06;
+                        notice-text := Text {
+                            x: root.width <= 1050px ? 6px : 16px;
+                            width: parent.width - self.x - 40px;
+                            y: (parent.height - self.height) / 2;
+                            text: root.notice;
+                            color: #6f4203;
+                            font-size: Theme.size;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            x: parent.width - self.width - 6px;
+                            y: (parent.height - self.height) / 2 - 3px;
+                            text: "×";
+                            color: notice-close.has-hover ? #000000 : #00000066;
+                            font-size: 35px;
+                            font-weight: 700;
+                            notice-close := TouchArea {
+                                clicked => { root.notice-closed(); }
+                            }
+                        }
+                    }
+                }
+
+                // ------------------------------------------------ search, filters, sorting
+                // ("Рекомендации" has none: it has its own buttons, under the rows' heading.)
+                if root.tab != 1: HorizontalLayout {
+                    height: 34px;
+                    spacing: 0px;
+                    Rectangle {
+                        width: root.search != "" ? 260px + 34px : 260px;
+                        Field {
+                            x: 0;
+                            width: 260px;
+                            text <=> root.search;
+                            placeholder: L.t("Search", "Поиск");
+                            right: 42px;
+                            max-length: 40;
+                            // As the original: the list follows the typing.
+                            edited(text) => { root.search-typed(text); }
+                            accepted(text) => { root.search-submitted(text); }
+                        }
+                        Icon {
+                            x: 260px - 34px + (34px - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            glyph: Icons.magnifying-glass;
+                            size: 14px;
+                            tint: Theme.text;
+                        }
+                        // The red cross that empties the search.
+                        if root.search != "": Btn {
+                            x: 260px;
+                            width: 34px;
+                            height: 34px;
+                            kind: 2;
+                            icon: Icons.xmark;
+                            clicked => {
+                                root.search = "";
+                                root.search-submitted("");
+                            }
+                        }
+                    }
+                    Rectangle { width: 8px; }
+                    Btn {
+                        height: 34px;
+                        kind: 1;
+                        icon: Icons.list-check;
+                        gap: 5px;
+                        text: L.t("Filter results", "Фильтры");
+                        after: root.width <= 950px ? "" : root.filter-count;
+                        after-color: Theme.filtered;
+                        clicked => { root.filters-open = !root.filters-open; }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    if !root.workshop-sorting: Rectangle {
+                        width: 8px + 12px;
+                        Path {
+                            x: 8px;
+                            y: (parent.height - self.height) / 2;
+                            width: 12px;
+                            height: 7px;
+                            viewbox-width: 12;
+                            viewbox-height: 7;
+                            commands: root.sort-descending ? "M0 0 L12 0 L6 7 Z" : "M0 7 L12 7 L6 0 Z";
+                            fill: Theme.text;
+                        }
+                        TouchArea {
+                            clicked => {
+                                root.sort-descending = !root.sort-descending;
+                                root.sort-direction-changed();
+                            }
+                        }
+                    }
+                    Rectangle { width: 8px; }
+                    DropList {
+                        width: root.width <= 950px ? 180px : 220px;
+                        height: 34px;
+                        options: root.sort-options;
+                        index <=> root.sort-index;
+                        selected(i) => { root.sort-changed(i); }
+                    }
+                }
+                Rectangle { height: 6px; }
+
+                // ------------------------------------------------ "Рекомендации": rows of wallpapers
+                if root.tab == 1: VerticalLayout {
+                    vertical-stretch: 1;
+                    // "Ваш контент" and "Поиск", large.
+                    HorizontalLayout {
+                        height: 44px;
+                        padding-top: 4px;
+                        spacing: 8px;
+                        alignment: start;
+                        Btn {
+                            height: 36px;
+                            pad: 8px;
+                            font-size: 25.2px;
+                            icon: Icons.user;
+                            text: L.t("Your content", "Ваш контент");
+                            enabled: false;
+                            tip: L.t("The original's own service picks this: not here.", "Это подбирает собственный сервис оригинала: здесь его нет.");
+                        }
+                        Btn {
+                            height: 36px;
+                            pad: 8px;
+                            font-size: 25.2px;
+                            icon: Icons.magnifying-glass;
+                            text: L.t("Search", "Поиск");
+                            clicked => {
+                                root.tab = 2;
+                                root.tab-changed(2);
+                            }
+                        }
+                    }
+                    explore := Scroll {
+                        vertical-stretch: 1;
+                        content-height: rows.preferred-height;
+                        rows := VerticalLayout {
+                            width: explore.visible-width;
+                            alignment: start;
+                            for row in root.explore-rows: VerticalLayout {
+                                padding-left: 43px;
+                                padding-right: 43px;
+                                padding-top: 10px;
+                                padding-bottom: 40px;
+                                Text {
+                                    text: row.title;
+                                    color: Theme.text;
+                                    font-size: 21px;
+                                }
+                                Rectangle {
+                                    height: root.explore-side + 12px;
+                                    strip := Flickable {
+                                        y: 10px;
+                                        height: root.explore-side + 2px;
+                                        content-width: row.count * (root.explore-side + 4px) + 2px;
+                                        interactive: false;
+                                        for j in row.count: Tile {
+                                            x: 1px + j * (root.explore-side + 4px);
+                                            y: 1px;
+                                            width: root.explore-side;
+                                            height: root.explore-side;
+                                            item: root.items[row.first + j];
+                                            selected: row.first + j == root.selected;
+                                            show-installed: true;
+                                            clicked => {
+                                                keys.focus();
+                                                root.item-selected(row.first + j);
+                                            }
+                                            activated => { root.item-activated(row.first + j); }
+                                        }
+                                    }
+                                    // The arrows either side: a strip's width at a time.
+                                    for side[k] in [-1, 1]: Rectangle {
+                                        x: k == 0 ? -43px : parent.width;
+                                        y: 10px;
+                                        width: 43px;
+                                        height: root.explore-side + 2px;
+                                        background: arrow.has-hover ? #00000080 : transparent;
+                                        animate background { duration: 200ms; }
+                                        Icon {
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                            glyph: k == 0 ? Icons.chevron-left : Icons.chevron-right;
+                                            size: 28px;
+                                            tint: Theme.text;
+                                            opacity: arrow.has-hover ? 1 : 0.5;
+                                            animate opacity { duration: 200ms; }
+                                        }
+                                        arrow := TouchArea {
+                                            clicked => {
+                                                strip.content-x = clamp(strip.content-x - side * strip.width, min(0px, strip.width - strip.content-width), 0px);
+                                            }
                                         }
                                     }
                                 }
@@ -801,205 +862,115 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
-                WeButton {
-                    text: L.t("Discover", "Рекомендации");
-                    icon: Icons.compass;
-                    primary: root.tab == 1;
-                    font: 17px;
-                    clicked => {
-                        root.tab = 1;
-                        root.tab-changed(1);
-                    }
-                }
-                WeButton {
-                    text: L.t("Workshop", "Мастерская");
-                    icon: Icons.steam;
-                    primary: root.tab == 2;
-                    font: 17px;
-                    clicked => {
-                        root.tab = 2;
-                        root.tab-changed(2);
-                    }
-                }
-                Rectangle { horizontal-stretch: 1; }
-                WeButton {
-                    text: L.t("Mobile devices", "Мобильные устройства");
-                    icon: Icons.phone;
-                    clicked => { root.dialog = 6; }
-                }
-                WeButton {
-                    text: L.t("Monitors", "Мониторы");
-                    icon: Icons.monitor;
-                    clicked => { root.dialog = 1; }
-                }
-                WeButton {
-                    text: L.t("Settings", "Настройки");
-                    icon: Icons.gear;
-                    clicked => {
-                        root.settings-shown();
-                        root.dialog = 2;
-                    }
-                }
-            }
-            Rectangle {
-                height: 2px;
-                background: Theme.accent;
-            }
-        }
 
-        // ---------------------------------------------------------- тело
-        HorizontalLayout {
-            spacing: 14px;
-            vertical-stretch: 1;
-
-            VerticalLayout {
-                horizontal-stretch: 1;
-                spacing: 8px;
-
-                // поиск, фильтры, сортировка
-                HorizontalLayout {
-                    height: 32px;
-                    spacing: 8px;
-                    Rectangle {
-                        width: 262px;
-                        background: Theme.well;
-                        border-width: 1px;
-                        border-color: field.has-focus ? Theme.accent : Theme.line;
-                        // Clipped: a long query scrolls inside the field, not under the icon.
-                        Rectangle {
-                            x: 10px;
-                            width: parent.width - 44px;
-                            clip: true;
-                            field := TextInput {
-                                // A line of text sits high in its own box: a pixel and a half down.
-                                y: 1.5px;
-                                height: parent.height;
-                                vertical-alignment: center;
-                                width: parent.width;
-                                text <=> root.search;
-                                color: Theme.text;
-                                font-size: 14px;
-                                single-line: true;
-                                accepted => { root.search-submitted(self.text); }
-                            }
-                        }
-                        if root.search == "": Text {
-                            x: 10px;
-                            y: 1.5px;
-                            height: parent.height;
-                            vertical-alignment: center;
-                            text: L.t("Search", "Поиск");
-                            color: Theme.faint;
-                            font-size: 14px;
-                        }
-                        Rectangle {
-                            x: parent.width - 30px;
-                            width: 30px;
-                            Icon {
-                                x: 6px;
-                                y: (parent.height - self.height) / 2;
-                                width: 18px;
-                                height: 18px;
-                                icon: Icons.search;
-                            }
-                            TouchArea {
-                                clicked => { root.search-submitted(root.search); }
-                            }
-                        }
-                    }
-                    WeButton {
-                        height: 32px;
-                        icon: Icons.filter;
-                        text: root.filtered ? L.t("Filters (Filtered)", "Фильтры (Отфильтровано)") : L.t("Filters", "Фильтры");
-                        primary: root.filters-open;
-                        font: 13px;
-                        clicked => { root.filters-open = !root.filters-open; }
-                    }
-                    Rectangle { horizontal-stretch: 1; }
-                    Dropdown {
-                        width: 240px;
-                        height: 32px;
-                        options: root.sort-options;
-                        index <=> root.sort-index;
-                        selected(i) => { root.sort-changed(i); }
-                    }
-                }
-
-                HorizontalLayout {
-                    spacing: 6px;
+                // ------------------------------------------------ filters and the grid
+                if root.tab != 1: HorizontalLayout {
                     vertical-stretch: 1;
+                    spacing: 0px;
 
-                    // -------------------------------------------- фильтры
-                    if root.filters-open: VerticalLayout {
-                        width: 244px;
-                        spacing: 6px;
-                        WeButton {
-                            height: 26px;
-                            icon: Icons.reset;
-                            text: L.t("Reset filters", "Сбросить фильтры");
-                            primary: true;
-                            font: 13px;
-                            clicked => { root.filters-reset(); }
+                    // The filters: 230 wide, folding to nothing in a fifth of a second.
+                    Rectangle {
+                        width: root.filters-open ? 230px : 0px;
+                        animate width { duration: 200ms; easing: ease; }
+                        clip: true;
+                        Rectangle {
+                            x: 219px;
+                            width: 1px;
+                            background: Theme.primary;
                         }
-                        WeButton {
-                            height: 26px;
-                            icon: Icons.gear;
-                            text: L.t("Filter settings", "Настройки фильтров");
-                            font: 13px;
-                            clicked => { root.dialog = 3; }
-                        }
-                        ScrollView {
-                            vertical-stretch: 1;
-                            VerticalLayout {
+                        panel := Scroll {
+                            width: 219px;
+                            content-height: filters.preferred-height;
+                            filters := VerticalLayout {
+                                width: panel.visible-width;
                                 alignment: start;
-                                spacing: 4px;
-                                padding-right: 14px;
+                                // The reset, and (in the workshop) the filter settings.
+                                VerticalLayout {
+                                    padding-right: 10px;
+                                    padding-bottom: 10px;
+                                    spacing: 5px;
+                                    Btn {
+                                        kind: 1;
+                                        icon: Icons.rotate;
+                                        text: L.t("Reset filters", "Сбросить фильтры");
+                                        clicked => { root.filters-reset(); }
+                                    }
+                                    if root.tab != 0: Btn {
+                                        icon: Icons.gear;
+                                        text: L.t("Filter settings", "Настройки фильтров");
+                                        clicked => { root.dialog = 3; }
+                                    }
+                                }
                                 for group[gi] in root.groups: VerticalLayout {
-                                    spacing: 2px;
-                                    if group.shown && group.boxed: Rectangle {
-                                        border-width: 1px;
-                                        border-color: Theme.line;
-                                        VerticalLayout {
-                                            padding: 8px;
-                                            spacing: 2px;
-                                            Text {
-                                                text: group.title + ":";
-                                                color: Theme.text;
-                                                font-size: 14px;
-                                                height: 22px;
-                                            }
-                                            for option[oi] in group.options: Check {
-                                                text: option.label;
-                                                icon: oi == 0 ? Icons.trophy : "";
-                                                icon-tint: #7ed957;
-                                                checked: option.checked;
-                                                toggled => { root.filter-toggled(gi, oi); }
+                                    // "Показать только:": a frame that is always open.
+                                    if group.shown && group.boxed: VerticalLayout {
+                                        padding-top: 10px;
+                                        padding-right: 10px;
+                                        padding-bottom: 15px;
+                                        GroupBox {
+                                            title: L.t("Show only:", "Показать только:");
+                                            VerticalLayout {
+                                                padding-top: 15px;
+                                                padding-bottom: 10px;
+                                                for option in group.options: HorizontalLayout {
+                                                    alignment: start;
+                                                    padding-left: 15px;
+                                                    height: 21px;
+                                                    opacity: option.usable ? 1 : 0.5;
+                                                    Check {
+                                                        tag: true;
+                                                        enabled: option.usable;
+                                                        font-size: 12.6px;
+                                                        box: 14px;
+                                                        checked: option.checked;
+                                                        toggled => { root.filter-toggled(gi, option.choice); }
+                                                    }
+                                                    if option.icon.w > 0: Rectangle {
+                                                        width: 15.75px;
+                                                        Icon {
+                                                            x: (parent.width - self.width) / 2;
+                                                            y: (parent.height - self.height) / 2;
+                                                            glyph: option.icon;
+                                                            size: 12.6px;
+                                                            tint: option.tint;
+                                                        }
+                                                    }
+                                                    Text {
+                                                        text: option.label;
+                                                        color: option.checked ? Theme.success : Theme.text;
+                                                        font-size: 12.6px;
+                                                        vertical-alignment: center;
+                                                        wrap: word-wrap;
+                                                        TouchArea {
+                                                            enabled: option.usable;
+                                                            clicked => { root.filter-toggled(gi, option.choice); }
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
                                     }
+                                    // A group: the caret and its title, "(Отфильтровано)" when it narrows.
                                     if group.shown && !group.boxed: Rectangle {
-                                        height: 24px;
-                                        Icon {
-                                            x: 2px;
-                                            y: (parent.height - self.height) / 2;
-                                            width: 18px;
-                                            height: 18px;
-                                            icon: group.open ? Icons.down : Icons.right;
-                                        }
+                                        height: 25px;
                                         HorizontalLayout {
-                                            x: 22px;
                                             alignment: start;
-                                            spacing: 5px;
+                                            height: 20px;
+                                            Rectangle {
+                                                width: 17.5px;
+                                                Icon {
+                                                    x: (parent.width - self.width) / 2;
+                                                    y: (parent.height - self.height) / 2;
+                                                    glyph: group.open ? Icons.caret-down : Icons.caret-right;
+                                                    size: 14px;
+                                                    tint: Theme.text;
+                                                }
+                                            }
                                             Text {
+                                                width: min(self.preferred-width, 190px);
                                                 text: group.title;
                                                 color: Theme.text;
-                                                font-size: 14px;
-                                                vertical-alignment: center;
-                                            }
-                                            if group.filtered: Text {
-                                                text: L.t("(Filtered)", "(Отфильтровано)");
-                                                color: Theme.filtered;
-                                                font-size: 14px;
+                                                font-size: Theme.size;
                                                 vertical-alignment: center;
                                             }
                                         }
@@ -1007,36 +978,106 @@ export component AppWindow inherits Window {
                                             clicked => { root.group-toggled(gi); }
                                         }
                                     }
-                                    if group.shown && !group.boxed && group.open && group.options.length > 6: HorizontalLayout {
-                                        height: 22px;
-                                        padding-left: 14px;
-                                        spacing: 14px;
-                                        alignment: start;
-                                        Text {
-                                            text: L.t("All", "Все");
-                                            color: Theme.accent;
-                                            font-size: 13px;
-                                            vertical-alignment: center;
-                                            TouchArea {
+                                    if group.shown && !group.boxed && group.filtered: Text {
+                                        text: L.t("(Filtered)", "(Отфильтровано)");
+                                        color: Theme.filtered;
+                                        font-size: Theme.size;
+                                    }
+                                    if group.shown && !group.boxed && group.open: VerticalLayout {
+                                        padding-bottom: 15px;
+                                        // The genres: "Все" and "Ничего" over them.
+                                        if group.options.length > 20 && group.options[0].kind == 0: HorizontalLayout {
+                                            height: 20px;
+                                            padding-left: 15px;
+                                            spacing: 10px;
+                                            alignment: start;
+                                            Link {
+                                                text: L.t("All", "Все");
+                                                font-size: 12.6px;
+                                                vertical-alignment: center;
                                                 clicked => { root.filter-group-all(gi, true); }
                                             }
-                                        }
-                                        Text {
-                                            text: L.t("None", "Ничего");
-                                            color: Theme.accent;
-                                            font-size: 13px;
-                                            vertical-alignment: center;
-                                            TouchArea {
+                                            Link {
+                                                text: L.t("None", "Ничего");
+                                                font-size: 12.6px;
+                                                vertical-alignment: center;
                                                 clicked => { root.filter-group-all(gi, false); }
                                             }
                                         }
-                                    }
-                                    if group.shown && !group.boxed && group.open: VerticalLayout {
-                                        padding-left: 14px;
-                                        for option[oi] in group.options: Check {
-                                            text: option.label;
-                                            checked: option.checked;
-                                            toggled => { root.filter-toggled(gi, oi); }
+                                        // The resolutions: the workshop's own settings for them.
+                                        if root.tab != 0 && gi == 3: HorizontalLayout {
+                                            padding-left: 15px;
+                                            padding-right: 5px;
+                                            padding-bottom: 4px;
+                                            Btn {
+                                                horizontal-stretch: 1;
+                                                kind: 4;
+                                                icon: Icons.gear;
+                                                text: L.t("Resolution Settings", "Настройки разрешения");
+                                                clicked => { root.dialog = 13; }
+                                            }
+                                        }
+                                        for option in group.options: VerticalLayout {
+                                            if option.kind == 1: Rectangle {
+                                                height: 12px;
+                                                Rectangle {
+                                                    x: 15px;
+                                                    y: 6px;
+                                                    height: 1px;
+                                                    background: Theme.primary;
+                                                }
+                                            }
+                                            if option.kind == 2: VerticalLayout {
+                                                padding-left: 15px;
+                                                padding-top: 10px;
+                                                Text {
+                                                    text: option.label;
+                                                    color: Theme.text;
+                                                    font-size: Theme.size;
+                                                    font-weight: 700;
+                                                }
+                                                HorizontalLayout {
+                                                    height: 20px;
+                                                    spacing: 10px;
+                                                    alignment: start;
+                                                    Link {
+                                                        text: L.t("All", "Все");
+                                                        font-size: 12.6px;
+                                                        vertical-alignment: center;
+                                                        clicked => { root.filter-section-all(gi, option.section, true); }
+                                                    }
+                                                    Link {
+                                                        text: L.t("None", "Ничего");
+                                                        font-size: 12.6px;
+                                                        vertical-alignment: center;
+                                                        clicked => { root.filter-section-all(gi, option.section, false); }
+                                                    }
+                                                }
+                                            }
+                                            if option.kind == 0: HorizontalLayout {
+                                                padding-left: 15px;
+                                                padding-right: 15px;
+                                                Check {
+                                                    height: 21px;
+                                                    text: option.label;
+                                                    font-size: 12.6px;
+                                                    box: 14px;
+                                                    checked: option.checked;
+                                                    toggled => { root.filter-toggled(gi, option.choice); }
+                                                }
+                                            }
+                                        }
+                                        // The ratings: the age settings of the Steam account.
+                                        if root.tab != 0 && gi == 2: HorizontalLayout {
+                                            padding-top: 10px;
+                                            padding-right: 10px;
+                                            Btn {
+                                                horizontal-stretch: 1;
+                                                icon: Icons.steam;
+                                                font-size: 12.25px;
+                                                text: L.t("Steam Content Preferences", "Настройки контента Steam");
+                                                clicked => { root.content-preferences(); }
+                                            }
                                         }
                                     }
                                 }
@@ -1044,70 +1085,224 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    // -------------------------------------------- сетка
-                    Rectangle {
+                    VerticalLayout {
                         horizontal-stretch: 1;
-                        clip: true;
-                        VerticalLayout {
-                            spacing: 6px;
-                            grid := ScrollView {
-                                vertical-stretch: 1;
-                                property <int> cols: max(1, floor((self.visible-width - 2px) / 172px));
-                                property <length> cell: (self.visible-width - 2px) / self.cols;
-                                content-width: self.visible-width;
-                                content-height: ceil(root.items.length / self.cols) * self.cell + 2px;
-                                for item[i] in root.items: Cell {
-                                    x: mod(i, grid.cols) * grid.cell;
-                                    y: floor(i / grid.cols) * grid.cell;
-                                    width: grid.cell;
-                                    height: grid.cell;
+                        spacing: 0px;
+                        Rectangle {
+                            vertical-stretch: 1;
+                            grid := Scroll {
+                                // The original's tiles: as many as fit at their least width with
+                                // their margin, grown to fill the row up to their greatest, the
+                                // rest of the row spread between them; square.
+                                property <length> room: self.visible-width - 2px;
+                                property <int> cols: max(1, floor(self.room / (root.tile-min + root.tile-gap)));
+                                property <length> side: min(root.tile-max, self.room / self.cols - root.tile-gap);
+                                property <length> spare: max(0px, self.room - self.cols * (self.side + root.tile-gap));
+                                property <length> step: self.side + root.tile-gap + (self.cols > 1 ? self.spare / (self.cols - 1) : 0px);
+                                changed cols => { root.grid-cols = self.cols; }
+                                init => { root.grid-cols = self.cols; }
+                                content-height: ceil(root.items.length / self.cols) * (self.side + root.tile-gap) + 2px;
+                                // The cells in view (their previews play), told when they change.
+                                property <int> first-row: max(0, floor(-self.offset / (self.side + root.tile-gap)));
+                                property <int> rows-seen: ceil(self.height / (self.side + root.tile-gap)) + 1;
+                                property <int> first-cell: self.first-row * self.cols;
+                                property <int> last-cell: min(root.items.length, (self.first-row + self.rows-seen) * self.cols);
+                                changed first-cell => { root.visible-changed(self.first-cell, self.last-cell); }
+                                changed last-cell => { root.visible-changed(self.first-cell, self.last-cell); }
+                                for item[i] in root.items: Tile {
+                                    x: 1px + mod(i, grid.cols) * grid.step;
+                                    y: 1px + floor(i / grid.cols) * (grid.side + root.tile-gap);
+                                    width: grid.side;
+                                    height: grid.side;
                                     item: item;
                                     selected: i == root.selected;
-                                    clicked => { root.item-selected(i); }
+                                    show-installed: !root.installed-tab;
+                                    clicked => {
+                                        // A click elsewhere takes the keys back from a field.
+                                        keys.focus();
+                                        root.item-selected(i);
+                                    }
                                     activated => { root.item-activated(i); }
+                                    context(x, y) => {
+                                        root.item-context(i);
+                                        tile-menu.x = self.x + x;
+                                        tile-menu.y = self.y + y + grid.offset;
+                                        tile-menu.show();
+                                    }
+                                }
+                                // The grid's own menu, under the pointer.
+                                TouchArea {
+                                    width: 0;
+                                    height: 0;
                                 }
                             }
-                            if root.pages.length > 1: HorizontalLayout {
-                                height: 24px;
-                                alignment: center;
-                                spacing: 4px;
-                                for page in root.pages: Rectangle {
-                                    width: max(22px, label.preferred-width + 10px);
-                                    background: page.current || page.page <= 0 ? transparent : pta.has-hover ? Theme.button-hover : Theme.button;
-                                    label := Text {
-                                        x: (parent.width - self.width) / 2;
-                                        y: (parent.height - self.height) / 2;
-                                        text: page.label;
-                                        color: page.current ? Theme.text : page.page > 0 ? Theme.accent : Theme.dim;
-                                        font-size: 16px;
-                                        font-weight: page.current ? 700 : 400;
+                            // --show menu=3: the menu of the third tile, open with the window.
+                            Timer {
+                                interval: 3000ms;
+                                running: root.debug-menu == 3 && root.items.length > 2;
+                                triggered => {
+                                    self.running = false;
+                                    root.item-context(2);
+                                    tile-menu.x = 400px;
+                                    tile-menu.y = 80px;
+                                    tile-menu.show();
+                                }
+                            }
+                            tile-menu := Menu {
+                                menu-width: 260px;
+                                entries: root.context-entries;
+                                submenus: root.context-submenus;
+                                activated(id) => { root.context-activated(id); }
+                            }
+                            if root.items.length == 0 || root.loading: Rectangle {
+                                background: root.items.length == 0 ? transparent : #222222c0;
+                                VerticalLayout {
+                                    alignment: start;
+                                    padding-top: 95px;
+                                    spacing: 14px;
+                                    Text {
+                                        text: root.loading ? L.t("Loading…", "Загрузка…") : root.error != "" ? root.error
+                                            : root.tab == 0 ? L.t("Nothing here yet. Wallpapers show up once you subscribe in the workshop.", "Здесь пусто. Обои появятся после подписки в мастерской.") : L.t("Nothing found", "Ничего не найдено");
+                                        color: root.error != "" && !root.loading ? Theme.danger : Theme.faint;
+                                        font-size: 22.4px;
+                                        horizontal-alignment: center;
+                                        wrap: word-wrap;
                                     }
-                                    pta := TouchArea {
-                                        enabled: page.page > 0 && !page.current;
-                                        clicked => { root.page-clicked(page.page); }
+                                    if root.error != "" && !root.loading: HorizontalLayout {
+                                        alignment: center;
+                                        Btn {
+                                            height: 46px;
+                                            pad: 16px;
+                                            font-size: 18px;
+                                            icon: Icons.rotate;
+                                            text: L.t("Reload", "Обновить");
+                                            clicked => { root.reload(); }
+                                        }
                                     }
                                 }
                             }
                         }
-                        if root.items.length == 0 || root.loading: Rectangle {
-                            background: root.items.length == 0 ? transparent : #22262bc0;
-                            VerticalLayout {
-                                alignment: center;
-                                spacing: 10px;
-                                Text {
-                                    text: root.loading ? L.t("Loading…", "Загрузка…") : root.error != "" ? root.error
-                                        : root.tab == 0 ? L.t("Nothing here yet. Wallpapers show up once you subscribe in the workshop.", "Здесь пусто. Обои появятся после подписки в мастерской.") : L.t("Nothing found", "Ничего не найдено");
-                                    color: root.error != "" && !root.loading ? Theme.danger : Theme.dim;
-                                    font-size: 17px;
-                                    horizontal-alignment: center;
-                                    wrap: word-wrap;
+                        if root.pages.length > 0: Pager {
+                            pages: root.pages;
+                            clicked(page) => { root.page-clicked(page); }
+                            ask => {
+                                root.preset-name = "";
+                                root.dialog = 12;
+                            }
+                        }
+                    }
+                }
+
+                // ------------------------------------------------ the playlist
+                Rectangle {
+                    height: root.playlist.length > 0 ? 120px : 38px;
+                    animate height { duration: 200ms; easing: ease; }
+                    clip: true;
+                    HorizontalLayout {
+                        y: 10px;
+                        height: 28px;
+                        spacing: 3px;
+                        Text {
+                            width: self.preferred-width + 10px;
+                            text: root.playlist.length > 0 ? L.t("Playlist", "Плейлист") + (L.russian ? " — (" : " (") + root.playlist.length + ")" : L.t("Playlist", "Плейлист");
+                            color: Theme.text;
+                            font-size: 24px;
+                            vertical-alignment: center;
+                        }
+                        Btn {
+                            y: 1px;
+                            icon: Icons.folder-open;
+                            text: L.t("Load", "Загрузить");
+                            clicked => { root.dialog = 5; }
+                        }
+                        Btn {
+                            y: 1px;
+                            icon: Icons.floppy-disk;
+                            text: L.t("Save", "Сохранить");
+                            enabled: root.playlist.length > 1;
+                            clicked => { root.playlist-save(); }
+                        }
+                        Btn {
+                            y: 1px;
+                            icon: Icons.gears;
+                            text: L.t("Configure", "Настроить");
+                            enabled: root.playlist.length > 0;
+                            clicked => { root.dialog = 4; }
+                        }
+                        if !root.sel-in-playlist: Btn {
+                            y: 1px;
+                            kind: 1;
+                            icon: Icons.plus;
+                            text: L.t("Add wallpaper", "Добавить обои");
+                            enabled: root.sel-installed;
+                            clicked => { root.playlist-add(); }
+                        }
+                        if root.sel-in-playlist: Btn {
+                            y: 1px;
+                            kind: 1;
+                            icon: Icons.minus;
+                            text: L.t("Remove wallpaper", "Удалить обои");
+                            clicked => { root.playlist-toggle-selected(); }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        if root.playlist.length > 0: Btn {
+                            y: 1px;
+                            kind: 2;
+                            icon: Icons.trash;
+                            text: L.t("Clear", "Очистить");
+                            clicked => { root.playlist-clear(); }
+                        }
+                    }
+                    // The wallpapers of the playlist, 48 square, in a row that scrolls.
+                    Flickable {
+                        y: 48px;
+                        height: 58px;
+                        content-width: max(self.width, root.playlist.length * 53px);
+                        HorizontalLayout {
+                            y: 0;
+                            height: 48px;
+                            alignment: start;
+                            spacing: 5px;
+                            for entry[i] in root.playlist: Rectangle {
+                                width: 48px;
+                                height: 48px;
+                                drop-shadow-offset-x: 2px;
+                                drop-shadow-offset-y: 2px;
+                                drop-shadow-blur: 3px;
+                                drop-shadow-color: #00000066;
+                                background: #7f7f7f1a;
+                                Image {
+                                    width: parent.width;
+                                    height: parent.height;
+                                    source: entry.image;
+                                    image-fit: cover;
                                 }
-                                if root.error != "" && !root.loading: HorizontalLayout {
-                                    alignment: center;
-                                    WeButton {
-                                        text: L.t("Retry", "Повторить");
-                                        icon: Icons.reset;
-                                        clicked => { root.reload(); }
+                                if entry.selected: Rectangle {
+                                    border-width: 3px;
+                                    border-color: Theme.primary;
+                                }
+                                if eta.has-hover && !entry.selected: Rectangle {
+                                    border-width: 1px;
+                                    border-color: #71a3f8cc;
+                                }
+                                eta := TouchArea {
+                                    clicked => { root.playlist-select(i); }
+                                }
+                                Rectangle {
+                                    x: parent.width - self.width;
+                                    width: 14px;
+                                    height: 17px;
+                                    opacity: eta.has-hover || trash.has-hover ? 1 : 0;
+                                    animate opacity { duration: 200ms; }
+                                    Icon {
+                                        x: 3px;
+                                        y: 2px;
+                                        glyph: Icons.xmark;
+                                        size: 14px;
+                                        tint: Theme.danger;
+                                    }
+                                    trash := TouchArea {
+                                        clicked => { root.playlist-remove(i); }
                                     }
                                 }
                             }
@@ -1116,143 +1311,257 @@ export component AppWindow inherits Window {
                 }
             }
 
-            // ------------------------------------------------ карточка обоев
+            // ---------------------------------------------------- the wallpaper's card
             Rectangle {
-                width: 330px;
+                width: root.card-width;
                 if !root.has-selection: Text {
-                    y: 16px;
+                    y: 100px;
                     width: parent.width;
-                    text: L.t("Pick a wallpaper", "Выберите обои");
-                    color: Theme.dim;
-                    font-size: 17px;
+                    text: L.t("Please select a wallpaper", "Выберите обои");
+                    color: Theme.faint;
+                    font-size: 16.8px;
                     horizontal-alignment: center;
                 }
-                if root.has-selection: VerticalLayout {
-                    spacing: 8px;
-                    Rectangle {
-                        height: self.width;
-                        background: #101215;
-                        clip: true;
-                        Image {
-                            width: parent.width;
-                            height: parent.height;
-                            source: root.sel-image;
-                            image-fit: contain;
-                            opacity: root.sel-loaded ? 1 : 0;
-                        }
-                    }
-                    Text {
-                        text: root.sel-title;
-                        color: Theme.text;
-                        font-size: 18px;
-                        horizontal-alignment: center;
-                        wrap: word-wrap;
-                        max-height: 52px;
-                        overflow: elide;
-                    }
-                    if root.sel-stars > 0: HorizontalLayout {
-                        height: 18px;
-                        alignment: center;
-                        spacing: 1px;
-                        for n in 5: Icon {
-                            width: 18px;
-                            height: 18px;
-                            icon: Icons.star;
-                            tint: root.sel-stars >= n + 0.5 ? #ffd24a : #4b535d;
-                        }
-                    }
-                    Text {
-                        text: root.sel-facts;
-                        color: Theme.dim;
-                        font-size: 12px;
-                        horizontal-alignment: center;
-                        wrap: word-wrap;
-                    }
-                    if root.sel-progress >= 0: Rectangle {
-                        height: 6px;
-                        background: Theme.well;
+                if root.has-selection: card := Scroll {
+                    x: root.mini ? 0 : 20px;
+                    width: parent.width - self.x;
+                    content-height: details.preferred-height;
+                    details := VerticalLayout {
+                        // Room for the bar when there is enough below to need one; asking the
+                        // bar itself would have the width depend on the height it decides.
+                        width: root.props.length > 3 ? card.visible-width : card.width;
+                        alignment: start;
+                        spacing: 0px;
+                        // The preview: 260 tall, its whole picture in it.
                         Rectangle {
-                            x: 0;
-                            width: parent.width * clamp(root.sel-progress, 0, 1);
-                            background: Theme.accent;
+                            height: root.card-width <= 205px ? 165px : 260px;
+                            Image {
+                                x: 10px;
+                                width: parent.width - 20px;
+                                height: parent.height;
+                                source: root.sel-image;
+                                image-fit: contain;
+                            }
                         }
-                    }
-                    HorizontalLayout {
-                        spacing: 6px;
-                        if root.sel-installed: WeButton {
-                            horizontal-stretch: 1;
-                            primary: true;
-                            text: root.sel-current ? L.t("On the desktop", "На рабочем столе") : L.t("Set wallpaper", "Установить обои");
-                            clicked => { root.apply(); }
-                        }
-                        if !root.sel-subscribed && !root.sel-installed: WeButton {
-                            horizontal-stretch: 1;
-                            primary: true;
-                            enabled: !root.sel-busy && root.steam-ok;
-                            icon: Icons.plus;
-                            text: root.sel-busy ? L.t("Subscribing…", "Подписка…") : L.t("Subscribe", "Подписаться");
-                            clicked => { root.subscribe(); }
-                        }
-                        WeButton {
-                            icon: Icons.star;
-                            primary: root.sel-favorite;
-                            clicked => { root.favorite(); }
-                        }
-                    }
-                    HorizontalLayout {
-                        spacing: 6px;
-                        if root.sel-subscribed: WeButton {
-                            horizontal-stretch: 1;
-                            enabled: !root.sel-busy && root.steam-ok;
-                            text: root.sel-busy ? L.t("Unsubscribing…", "Отписка…") : L.t("Unsubscribe", "Отписаться");
-                            font: 13px;
-                            clicked => { root.unsubscribe(); }
-                        }
-                        if !root.sel-subscribed && root.sel-installed: WeButton {
-                            horizontal-stretch: 1;
-                            enabled: !root.sel-busy && root.steam-ok;
-                            text: L.t("Subscribe", "Подписаться");
-                            font: 13px;
-                            clicked => { root.subscribe(); }
-                        }
-                        WeButton {
-                            horizontal-stretch: 1;
-                            icon: Icons.steam;
-                            text: L.t("In the workshop", "В мастерской");
-                            font: 13px;
-                            clicked => { root.open-steam(); }
-                        }
-                        if root.sel-installed: WeButton {
-                            icon: Icons.folder;
-                            clicked => { root.open-folder(); }
-                        }
-                    }
-                    Rectangle {
-                        height: 1px;
-                        background: Theme.line;
-                    }
-                    ScrollView {
-                        vertical-stretch: 1;
-                        VerticalLayout {
-                            alignment: start;
-                            spacing: 8px;
-                            padding-right: 14px;
-                            if root.props.length > 0: HorizontalLayout {
-                                Text {
-                                    text: L.t("Properties", "Свойства");
-                                    color: Theme.text;
-                                    font-size: 16px;
-                                    vertical-alignment: center;
+                        // In the small window: the arrows to the wallpaper before and after.
+                        if root.mini: HorizontalLayout {
+                            alignment: center;
+                            padding-top: 5px;
+                            spacing: 4px;
+                            for arrow[a] in [Icons.angles-left, Icons.angles-right]: Rectangle {
+                                width: 41px;
+                                height: 22px;
+                                border-radius: 3px;
+                                background: nav.has-hover ? Theme.primary : Theme.button;
+                                Icon {
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                    glyph: arrow;
+                                    size: 16.8px;
+                                    tint: nav.has-hover ? Theme.white : Theme.primary;
                                 }
-                                Rectangle { horizontal-stretch: 1; }
-                                WeButton {
-                                    height: 24px;
-                                    icon: Icons.reset;
-                                    text: L.t("Reset", "Сбросить");
-                                    font: 12px;
-                                    clicked => { root.props-reset(); }
+                                nav := TouchArea {
+                                    clicked => { root.navigate(a == 0 ? -1 : 1); }
                                 }
                             }
+                        }
+                        VerticalLayout {
+                            padding-left: 5px;
+                            padding-right: 5px;
+                            Text {
+                                height: self.preferred-height + 10px;
+                                text: root.sel-title;
+                                color: Theme.text;
+                                font-size: 17.5px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                wrap: word-wrap;
+                            }
+                            // The author: avatar, name (their page), the magnifier (all their wallpapers).
+                            if root.sel-workshop: HorizontalLayout {
+                                padding-top: 14px;
+                                height: 46px;
+                                alignment: center;
+                                spacing: 8px;
+                                Rectangle {
+                                    width: 32px;
+                                    height: 32px;
+                                    background: #3c3c3c;
+                                    Image {
+                                        width: parent.width;
+                                        height: parent.height;
+                                        source: root.sel-avatar;
+                                        image-fit: cover;
+                                    }
+                                }
+                                Text {
+                                    text: root.sel-author != "" ? root.sel-author : L.t("Loading author...", "Загрузка автора...");
+                                    color: root.sel-author != "" ? (author-link.has-hover ? #0b58dd : Theme.primary) : Theme.text;
+                                    font-size: 17.5px;
+                                    vertical-alignment: center;
+                                    author-link := TouchArea {
+                                        enabled: root.sel-author != "";
+                                        clicked => { root.open-author(); }
+                                    }
+                                }
+                                if root.sel-author != "": Btn {
+                                    y: (parent.height - 14px - self.height) / 2;
+                                    width: 28px;
+                                    pad: 0px;
+                                    icon: Icons.magnifying-glass;
+                                    clicked => { root.browse-author(); }
+                                }
+                            }
+                            // The rating: stars; under the pointer, the votes. The heart: a favourite.
+                            if root.sel-workshop: HorizontalLayout {
+                                padding-top: 14px;
+                                height: 40px;
+                                alignment: center;
+                                rating := Rectangle {
+                                    width: 150px;
+                                    property <bool> over: rate-area.has-hover;
+                                    rate-area := TouchArea { }
+                                    if !rating.over: HorizontalLayout {
+                                        x: 1px;
+                                        y: 3px;
+                                        height: 20px;
+                                        spacing: 1px;
+                                        alignment: start;
+                                        for n in 5: Rectangle {
+                                            width: 21px;
+                                            Icon {
+                                                x: (parent.width - self.width) / 2;
+                                                y: (parent.height - self.height) / 2;
+                                                glyph: root.sel-stars >= n + 1 ? Icons.star : Icons.star-regular;
+                                                size: 17px;
+                                                tint: root.sel-stars < 1 ? Theme.faint : Theme.primary;
+                                            }
+                                        }
+                                    }
+                                    if rating.over: HorizontalLayout {
+                                        spacing: 4px;
+                                        alignment: start;
+                                        Btn {
+                                            width: 32px;
+                                            pad: 0px;
+                                            icon: Icons.thumbs-down;
+                                            icon-tint: root.sel-vote < 0 ? Theme.primary : Theme.text;
+                                            clicked => { root.vote(false); }
+                                        }
+                                        Btn {
+                                            width: 32px;
+                                            pad: 0px;
+                                            icon: Icons.thumbs-up;
+                                            icon-tint: root.sel-vote > 0 ? Theme.primary : Theme.text;
+                                            clicked => { root.vote(true); }
+                                        }
+                                    }
+                                    Btn {
+                                        x: parent.width - self.width;
+                                        width: 28px;
+                                        pad: 0px;
+                                        icon: Icons.heart;
+                                        icon-tint: root.sel-favorite ? Theme.favorite : Theme.text;
+                                        clicked => { root.favorite(); }
+                                    }
+                                }
+                            }
+                            if root.sel-facts != "": Text {
+                                height: 34px;
+                                text: root.sel-facts;
+                                color: #d4d4d4;
+                                font-size: Theme.size;
+                                horizontal-alignment: center;
+                                vertical-alignment: bottom;
+                            }
+                            if root.sel-tags.length > 0: VerticalLayout {
+                                padding-top: 14px;
+                                for row in root.sel-tags: HorizontalLayout {
+                                    alignment: center;
+                                    spacing: 4px;
+                                    height: 28px;
+                                    for tag in row: Rectangle {
+                                        y: 2px;
+                                        height: 24px;
+                                        width: pill.preferred-width + 12px;
+                                        border-radius: 12px;
+                                        background: Theme.button;
+                                        pill := Text {
+                                            x: 6px;
+                                            y: (parent.height - self.height) / 2;
+                                            text: tag;
+                                            color: Theme.text;
+                                            font-size: Theme.size;
+                                        }
+                                    }
+                                }
+                            }
+                            if root.sel-progress >= 0: Rectangle {
+                                height: 10px;
+                                Rectangle {
+                                    y: 4px;
+                                    height: 6px;
+                                    background: Theme.field;
+                                    Rectangle {
+                                        x: 0;
+                                        width: parent.width * clamp(root.sel-progress, 0, 1);
+                                        background: Theme.primary;
+                                    }
+                                }
+                            }
+                        }
+                        // The buttons: unsubscribe in red, subscribe in green; the workshop's page,
+                        // the link, a report.
+                        VerticalLayout {
+                            padding-top: 15px;
+                            padding-left: 5px;
+                            padding-right: 5px;
+                            spacing: 4px;
+                            if root.sel-workshop && (root.sel-subscribed || root.sel-installed): Btn {
+                                kind: 2;
+                                enabled: !root.sel-busy && root.steam-ok;
+                                icon: Icons.xmark;
+                                text: root.sel-busy ? L.t("Unsubscribing...", "Отписка...") : L.t("Unsubscribe", "Отписаться");
+                                clicked => { root.unsubscribe(); }
+                            }
+                            if root.sel-workshop && !root.sel-subscribed && !root.sel-installed: Btn {
+                                kind: 3;
+                                enabled: !root.sel-busy && root.steam-ok;
+                                icon: Icons.download;
+                                text: root.sel-busy ? L.t("Subscribing...", "Подписка...") : L.t("Subscribe", "Подписаться");
+                                clicked => { root.subscribe(); }
+                            }
+                            if root.sel-workshop: HorizontalLayout {
+                                spacing: 4px;
+                                Btn {
+                                    horizontal-stretch: 1;
+                                    icon: Icons.steam;
+                                    text: root.card-width <= 205px ? "" : L.t("Comment", "Комментировать");
+                                    tip: L.t("Workshop", "Мастерская");
+                                    clicked => { root.open-steam(); }
+                                }
+                                Btn {
+                                    width: root.card-width <= 205px ? 0px : 32px;
+                                    horizontal-stretch: root.card-width <= 205px ? 1 : 0;
+                                    pad: 0px;
+                                    icon: Icons.copy;
+                                    tip: L.t("Copy URL", "Скопировать URL");
+                                    clicked => { root.copy-link(); }
+                                }
+                                Btn {
+                                    width: root.card-width <= 205px ? 0px : 32px;
+                                    horizontal-stretch: root.card-width <= 205px ? 1 : 0;
+                                    pad: 0px;
+                                    icon: Icons.triangle-exclamation;
+                                    tip: L.t("Report", "Пожаловаться");
+                                    clicked => { root.report(); }
+                                }
+                            }
+                        }
+                        if root.sel-installed: VerticalLayout {
+                            padding-left: 5px;
+                            padding-right: 5px;
+                            Header { title: L.t("Properties", "Свойства"); }
                             for prop[pi] in root.props: PropRow {
                                 prop: prop;
                                 toggled(v) => { root.prop-bool(pi, v); }
@@ -1260,444 +1569,340 @@ export component AppWindow inherits Window {
                                 text(v) => { root.prop-text(pi, v); }
                                 index(v) => { root.prop-index(pi, v); }
                             }
-                            if root.props.length > 0: Rectangle {
-                                height: 1px;
-                                background: Theme.line;
+                            Header { title: L.t("Your Presets", "Ваши пресеты"); }
+                            VerticalLayout {
+                                spacing: 4px;
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    Btn {
+                                        horizontal-stretch: 1;
+                                        icon: Icons.folder-open;
+                                        fixed-icon: true;
+                                        text: root.card-width <= 205px ? "" : L.t("Load", "Загрузить");
+                                        clicked => { root.dialog = 7; }
+                                    }
+                                    Btn {
+                                        horizontal-stretch: 1;
+                                        icon: Icons.floppy-disk;
+                                        fixed-icon: true;
+                                        text: root.card-width <= 205px ? "" : L.t("Save", "Сохранить");
+                                        clicked => {
+                                            root.preset-name = "";
+                                            root.dialog = 8;
+                                        }
+                                    }
+                                }
+                                Btn {
+                                    icon: Icons.rectangle-list;
+                                    fixed-icon: true;
+                                    text: root.card-width <= 205px ? L.t("Apply to all", "Применить ко всем") : L.t("Apply to all Wallpapers", "Применить ко всем обоям");
+                                    clicked => { root.preset-apply-all(); }
+                                }
+                                Btn {
+                                    icon: Icons.retweet;
+                                    fixed-icon: true;
+                                    text: L.t("Share JSON", "Поделиться JSON'ом");
+                                    clicked => { root.preset-share(); }
+                                }
+                                Btn {
+                                    kind: 2;
+                                    icon: Icons.rotate;
+                                    fixed-icon: true;
+                                    text: L.t("Reset", "Сбросить");
+                                    clicked => { root.props-reset(); }
+                                }
                             }
-                            if root.sel-tags != "": Text {
-                                text: root.sel-tags;
-                                color: Theme.accent;
-                                font-size: 12px;
-                                wrap: word-wrap;
-                            }
-                            Text {
-                                text: root.sel-description;
-                                color: Theme.dim;
-                                font-size: 13px;
-                                wrap: word-wrap;
-                            }
+                            Rectangle { height: 10px; }
                         }
                     }
                 }
             }
         }
 
-        // ---------------------------------------------------------- плейлист
+        // ------------------------------------------------------------ the buttons below
+        Rectangle { height: 18px; }
         HorizontalLayout {
-            height: 40px;
-            spacing: 6px;
-            Text {
-                text: L.t("Playlist", "Плейлист");
-                color: Theme.text;
-                font-size: 24px;
-                vertical-alignment: center;
+            height: 26px;
+            spacing: 0px;
+            if !root.mini: Btn {
+                width: root.width <= 900px ? 95px : 250px;
+                kind: 1;
+                icon: Icons.pen-ruler;
+                text: root.width <= 900px ? "" : L.t("Wallpaper Editor", "Редактор обоев");
+                tip: L.t("Wallpaper Editor", "Редактор обоев");
+                clicked => { root.open-editor(); }
             }
-            Rectangle { width: 8px; }
-            VerticalLayout {
-                alignment: center;
-                HorizontalLayout {
-                    height: 26px;
-                    spacing: 4px;
-                    WeButton {
-                        height: 26px;
-                        icon: Icons.folder;
-                        text: L.t("Load", "Загрузить");
-                        clicked => { root.dialog = 5; }
-                    }
-                    WeButton {
-                        height: 26px;
-                        icon: Icons.save;
-                        text: L.t("Save", "Сохранить");
-                        enabled: root.playlist.length > 0;
-                        clicked => { root.playlist-save(); }
-                    }
-                    WeButton {
-                        height: 26px;
-                        icon: Icons.sliders;
-                        text: L.t("Configure", "Настроить");
-                        clicked => { root.dialog = 4; }
-                    }
-                    WeButton {
-                        height: 26px;
-                        icon: Icons.plus;
-                        text: L.t("Add wallpaper", "Добавить обои");
-                        primary: true;
-                        enabled: root.sel-installed;
-                        clicked => { root.playlist-add(); }
+            if !root.mini: Rectangle { width: 10px; }
+            if !root.mini: Rectangle {
+                width: root.width <= 900px ? 95px : 250px;
+                open-btn := Btn {
+                    width: parent.width;
+                    icon: Icons.upload;
+                    text: root.width <= 900px ? "" : L.t("Open Wallpaper", "Открыть обои");
+                    tip: L.t("Open Wallpaper", "Открыть обои");
+                    clicked => { open-menu.show(); }
+                }
+                // --show menu=2: "Открыть обои", open with the window.
+                Timer {
+                    interval: 1500ms;
+                    running: root.debug-menu == 2;
+                    triggered => {
+                        self.running = false;
+                        open-menu.show();
                     }
                 }
-            }
-            Rectangle { width: 8px; }
-            Rectangle {
-                horizontal-stretch: 1;
-                clip: true;
-                HorizontalLayout {
-                    alignment: start;
-                    spacing: 4px;
-                    for entry[i] in root.playlist: Rectangle {
-                        width: 40px;
-                        height: 40px;
-                        background: #101215;
-                        border-width: eta.has-hover ? 1px : 0;
-                        border-color: Theme.danger;
-                        Image {
-                            width: parent.width;
-                            height: parent.height;
-                            source: entry.image;
-                            image-fit: cover;
-                            opacity: entry.loaded ? (eta.has-hover ? 0.35 : 1) : 0;
-                        }
-                        if eta.has-hover: Icon {
-                            x: 12px;
-                            y: 12px;
-                            icon: Icons.close;
-                        }
-                        eta := TouchArea {
-                            clicked => { root.playlist-remove(i); }
-                        }
-                    }
+                open-menu := Menu {
+                    x: 0;
+                    y: 0;
+                    up: true;
+                    menu-width: 370px;
+                    entries: [
+                        { label: L.t("Create new wallpaper (animations and sharing)", "Создание новых обоев (анимация и публикация)"), icon: Icons.pen-ruler, enabled: false, sub: -1, id: "editor" },
+                        { label: L.t("Open offline wallpaper (animated)", "Открыть оффлайн обои (анимированные)"), icon: Icons.film, enabled: true, sub: -1, id: "animated" },
+                        { label: L.t("Open background image (no animations)", "Открыть фоновое изображение (без анимации)"), icon: Icons.image, enabled: true, sub: -1, id: "static" },
+                        { label: L.t("Open from URL", "Открыть URL"), icon: Icons.globe, enabled: false, sub: -1, id: "url" },
+                    ];
+                    activated(id) => { root.open-file(id); }
                 }
             }
-            if root.playlist-running: Text {
-                text: L.t("running", "идёт");
-                color: Theme.ok;
-                font-size: 13px;
-                vertical-alignment: center;
-            }
-        }
-
-        // ---------------------------------------------------------- нижние кнопки
-        HorizontalLayout {
-            height: 28px;
-            spacing: 8px;
-            WeButton {
-                width: 250px;
-                icon: Icons.tools;
-                text: L.t("Wallpaper Editor", "Редактор обоев");
-                primary: true;
-                enabled: false;
-            }
-            WeButton {
-                width: 250px;
-                icon: Icons.upload;
-                text: L.t("Open wallpaper", "Открыть обои");
-                clicked => { root.open-file(); }
-            }
-            Text {
-                horizontal-stretch: 1;
-                text: root.status;
-                color: Theme.dim;
-                font-size: 12px;
-                vertical-alignment: center;
-                horizontal-alignment: center;
-                overflow: elide;
-            }
-            WeButton {
-                width: 96px;
-                text: "OK";
-                primary: true;
+            Rectangle { horizontal-stretch: 1; }
+            Btn {
+                width: 95px;
+                kind: 1;
+                text: L.t("OK", "ОК");
                 clicked => { root.accept(); }
             }
-            WeButton {
-                width: 96px;
+            Rectangle { width: 5px; }
+            Btn {
+                width: 95px;
                 text: L.t("Cancel", "Отмена");
                 clicked => { root.cancel(); }
             }
         }
     }
 
-    // -------------------------------------------------------------- диалоги
-    if root.dialog == 1: Dialog {
-        title: L.t("Monitors", "Мониторы");
-        closed => { root.dialog = 0; }
-        Text {
-            text: L.t("Pick the monitor wallpapers go to. \"All monitors\" puts one wallpaper on every monitor.", "Выбери, на какой монитор ставятся обои. «Все мониторы» ставит одни обои на все.");
-            color: Theme.dim;
-            font-size: 13px;
-            wrap: word-wrap;
-        }
-        Rectangle { height: 8px; }
-        Rectangle {
-            height: 44px;
-            border-width: root.monitor-index == -1 ? 2px : 1px;
-            border-color: root.monitor-index == -1 ? Theme.accent : Theme.line;
-            background: all-ta.has-hover ? Theme.button-hover : Theme.well;
-            Text {
-                x: 12px;
-                text: L.t("All monitors", "Все мониторы");
-                color: Theme.text;
-                font-size: 15px;
-                vertical-alignment: center;
-            }
-            all-ta := TouchArea {
-                clicked => {
-                    root.monitor-index = -1;
-                    root.monitor-picked(-1);
-                }
-            }
-        }
-        for mon[i] in root.monitors: VerticalLayout {
-            padding-top: 6px;
-            Rectangle {
-                height: 52px;
-                border-width: root.monitor-index == i ? 2px : 1px;
-                border-color: root.monitor-index == i ? Theme.accent : Theme.line;
-                background: mta.has-hover ? Theme.button-hover : Theme.well;
-                Text {
-                    x: 12px;
-                    y: 7px;
-                    text: L.t("Monitor ", "Монитор ") + (i + 1) + "  ·  " + mon.name + "  ·  " + mon.detail;
-                    color: Theme.text;
-                    font-size: 15px;
-                }
-                Text {
-                    x: 12px;
-                    y: 29px;
-                    width: parent.width - 24px;
-                    text: mon.wallpaper;
-                    color: Theme.dim;
-                    font-size: 12px;
-                    overflow: elide;
-                }
-                mta := TouchArea {
-                    clicked => {
-                        root.monitor-index = i;
-                        root.monitor-picked(i);
-                    }
-                }
-            }
-        }
-        Rectangle { height: 12px; }
+    // The line between the grid and the card is the window's own colour: nothing to draw.
+
+    // ---------------------------------------------------------------- the monitors
+    MonitorPanel {
+        x: 1px;
+        y: 1px;
+        width: parent.width - 2px;
+        height: parent.height - 2px;
+        open <=> root.monitors-open;
+        monitors: root.monitors;
+        wide: root.desk-width;
+        high: root.desk-height;
+        index <=> root.monitor-index;
+        on-start <=> root.monitors-on-start;
+        picked(i) => { root.monitor-picked(i); }
+        cleared(i) => { root.monitor-cleared(i); }
+        on-start-changed(on) => { root.monitors-on-start-changed(on); }
+        backdrop: root.backdrop;
+        profiles(save) => { root.monitor-profiles(save); }
     }
 
+    // ---------------------------------------------------------------- the settings
+    if root.settings-open: SettingsView {
+        x: 1px;
+        y: 1px;
+        width: parent.width - 2px;
+        height: parent.height - 2px;
+        values <=> root.settings;
+        tab <=> root.settings-tab;
+        about: root.about;
+        caption: root.caption;
+        plugins: root.plugins;
+        accepted => {
+            root.settings-save();
+            root.settings-open = false;
+        }
+        cancelled => { root.settings-open = false; }
+        reset => { root.settings-reset(); }
+    }
+
+    // ---------------------------------------------------------------- the small dialogs
     // The first run: the language, before anything else.
     if root.dialog == 9: Dialog {
         title: "Language · Язык";
         panel-width: 360px;
         HorizontalLayout {
             spacing: 10px;
-            WeButton {
+            Btn {
                 horizontal-stretch: 1;
                 height: 40px;
                 text: "English";
-                primary: !L.russian;
+                kind: L.russian ? 0 : 1;
                 clicked => { root.language-picked(0); }
             }
-            WeButton {
+            Btn {
                 horizontal-stretch: 1;
                 height: 40px;
                 text: "Русский";
-                primary: L.russian;
+                kind: L.russian ? 1 : 0;
                 clicked => { root.language-picked(1); }
             }
         }
-        Rectangle { height: 14px; }
+        Rectangle { height: 16px; }
     }
 
-    if root.dialog == 2: Dialog {
-        title: L.t("Settings", "Настройки");
+    // "Настройки фильтров" of the workshop: whether to see anime.
+    if root.dialog == 3: Dialog {
+        title: L.t("Workshop Filter Settings", "Настройки фильтра Мастерской");
+        panel-width: 600px;
         closed => { root.dialog = 0; }
-        HorizontalLayout {
-            height: 34px;
-            spacing: 10px;
-            Text {
-                width: 190px;
-                text: "Language · Язык";
-                color: Theme.text;
-                font-size: 14px;
-                vertical-alignment: center;
-            }
-            Dropdown {
-                horizontal-stretch: 1;
-                options: ["English", "Русский"];
-                index <=> root.set-lang;
-            }
-        }
-        Rectangle { height: 10px; }
         Text {
-            text: L.t("Performance", "Производительность");
+            text: L.t("Use the filter sidebar on the left to select tags that match your wallpaper preferences. Use the Approved filter to only see wallpapers approved by the Wallpaper Engine team.", "Используйте панель фильтров слева для выбора тегов обоев по вашем предпочтениям. Используйте фильтр «Одобренных» для показа обоев, одобренных командой Wallpaper Engine.");
             color: Theme.text;
-            font-size: 16px;
+            font-size: Theme.size;
+            wrap: word-wrap;
         }
-        Rectangle { height: 6px; }
-        HorizontalLayout {
-            height: 30px;
-            spacing: 10px;
-            Text {
-                width: 164px;
-                text: L.t("Frames per second", "Кадров в секунду");
-                color: Theme.text;
-                font-size: 14px;
-                vertical-alignment: center;
-            }
-            Info {
-                y: (parent.height - self.height) / 2;
-                text: L.t("The wallpaper's frame rate cap. 30 roughly halves the processor and GPU work.", "Потолок кадров обоев. 30 примерно вдвое снижает нагрузку на процессор и видеокарту.");
-            }
-            Slider {
-                horizontal-stretch: 1;
-                minimum: 10;
-                maximum: 165;
-                value: root.set-fps;
-                changed(v) => { root.set-fps = round(v); }
-            }
-            Text {
-                width: 40px;
-                text: root.set-fps;
-                color: Theme.dim;
-                font-size: 14px;
-                vertical-alignment: center;
-                horizontal-alignment: right;
-            }
-        }
-        HorizontalLayout {
-            height: 34px;
-            spacing: 10px;
-            Text {
-                width: 164px;
-                text: L.t("Videos inside scenes", "Видео внутри сцен");
-                color: Theme.text;
-                font-size: 14px;
-                vertical-alignment: center;
-            }
-            Info {
-                y: (parent.height - self.height) / 2;
-                text: L.t("Where videos are decoded. Processor: very little video memory, more processor load. Graphics card: less processor load, a few hundred megabytes of video memory more.", "Где декодируются видео. Процессор: совсем мало видеопамяти, больше нагрузка на процессор. Видеокарта: меньше нагрузка на процессор, на несколько сотен мегабайт больше видеопамяти.");
-            }
-            Dropdown {
-                horizontal-stretch: 1;
-                options: [L.t("Processor", "Процессор"), L.t("Graphics card", "Видеокарта")];
-                index <=> root.set-video;
-            }
-        }
-        Rectangle { height: 4px; }
-        Rectangle { height: 10px; }
+        Rectangle { height: 20px; Rectangle { y: 10px; height: 1px; background: #3c3c3c; } }
         Text {
-            text: L.t("Fullscreen", "Полный экран");
+            text: L.t("Wallpaper Engine contains a lot of «Anime» wallpapers. Do you want to see «Anime» wallpapers?", "Wallpaper Engine содержит много обоев с тематикой «Аниме». Вы хотите видеть «Аниме» обои?");
             color: Theme.text;
-            font-size: 16px;
+            font-size: Theme.size;
+            wrap: word-wrap;
         }
-        Rectangle { height: 6px; }
-        Option {
-            text: L.t("Freeze under fullscreen windows", "Замораживать под полноэкранными окнами");
-            hint: L.t("Hyprland. A monitor that shows a fullscreen window keeps the wallpaper's last frame and does no work; the wallpaper goes on from that frame when the desktop is back.", "Hyprland. На мониторе с полноэкранным окном обои замирают на последнем кадре и ничего не считают, а когда рабочий стол снова виден, идут дальше с этого кадра.");
-            checked: root.set-freeze;
-            toggled => { root.set-freeze = !root.set-freeze; }
-        }
-        Option {
-            text: L.t("Stop the engine when every monitor is fullscreen", "Останавливать движок, когда все мониторы в полном экране");
-            hint: L.t("Hyprland. Frees the video memory for a game. The scene starts over when the desktop is back.", "Hyprland. Освобождает видеопамять для игры. Когда рабочий стол снова виден, сцена начинается заново.");
-            checked: root.set-stop;
-            toggled => { root.set-stop = !root.set-stop; }
-        }
-        Rectangle { height: 10px; }
-        Text {
-            text: L.t("Desktop", "Рабочий стол");
-            color: Theme.text;
-            font-size: 16px;
-        }
-        Rectangle { height: 6px; }
-        Option {
-            text: L.t("Still frame for awww, swww or hyprpaper", "Стоп-кадр для awww, swww или hyprpaper");
-            hint: L.t("Gives your static wallpaper program a frame of the live wallpaper, so the desktop shows it before the engine starts and while it is stopped.", "Отдаёт программе статичных обоев кадр живых обоев: рабочий стол показывает его, пока движок не запустился и пока он остановлен.");
-            checked: root.set-still;
-            toggled => { root.set-still = !root.set-still; }
-        }
-        Rectangle { height: 10px; }
-        Text {
-            text: L.t("Sound", "Звук");
-            color: Theme.text;
-            font-size: 16px;
-        }
-        Rectangle { height: 6px; }
-        Option {
-            text: L.t("Wallpaper sound", "Звук обоев");
-            hint: L.t("Plays the wallpaper's own sound and lets scenes react to the music you play.", "Включает собственный звук обоев и реакцию сцен на музыку, которую ты слушаешь.");
-            checked: root.set-audio;
-            toggled => { root.set-audio = !root.set-audio; }
-        }
+        Rectangle { height: 15px; }
         HorizontalLayout {
-            height: 30px;
+            alignment: center;
             spacing: 10px;
-            Text {
-                width: 190px;
-                text: L.t("Volume", "Громкость");
-                color: Theme.text;
-                font-size: 14px;
-                vertical-alignment: center;
+            Btn {
+                height: 46px;
+                pad: 16px;
+                font-size: 18px;
+                kind: root.anime-shown ? 3 : 0;
+                text: L.t("Show Anime", "Показать аниме");
+                clicked => { root.anime-changed(true); }
             }
-            Slider {
-                horizontal-stretch: 1;
-                minimum: 0;
-                maximum: 100;
-                value: root.set-volume;
-                changed(v) => { root.set-volume = round(v); }
-            }
-            Text {
-                width: 40px;
-                text: root.set-volume;
-                color: Theme.dim;
-                font-size: 14px;
-                vertical-alignment: center;
-                horizontal-alignment: right;
+            Btn {
+                height: 46px;
+                pad: 16px;
+                font-size: 18px;
+                kind: root.anime-shown ? 0 : 5;
+                text: L.t("Hide Anime", "Скрыть аниме");
+                clicked => { root.anime-changed(false); }
             }
         }
-        Rectangle { height: 14px; }
+        Rectangle { height: 15px; }
+        Text {
+            text: L.t("You can change this option any time by opening the filter settings again.", "Вы сможете поменять эту опцию позже, зайдя в настройки фильтров.");
+            color: Theme.text;
+            font-size: Theme.size;
+            wrap: word-wrap;
+        }
+        Rectangle { height: 16px; }
         HorizontalLayout {
             alignment: end;
-            spacing: 8px;
-            WeButton {
-                width: 110px;
-                text: L.t("Apply", "Применить");
-                primary: true;
-                clicked => {
-                    root.settings-save();
-                    root.dialog = 0;
-                }
+            spacing: 5px;
+            Btn {
+                width: 95px;
+                kind: 1;
+                text: L.t("OK", "ОК");
+                clicked => { root.dialog = 0; }
             }
-            WeButton {
-                width: 96px;
+            Btn {
+                width: 95px;
                 text: L.t("Cancel", "Отмена");
                 clicked => { root.dialog = 0; }
             }
         }
-        Rectangle { height: 12px; }
+        Rectangle { height: 16px; }
     }
 
-    if root.dialog == 3: Dialog {
-        title: L.t("Filter settings", "Настройки фильтров");
-        panel-width: 380px;
+    // "Настройки разрешения" of the workshop.
+    if root.dialog == 13: Dialog {
+        title: L.t("Resolution Settings", "Настройки разрешения");
+        panel-width: 600px;
         closed => { root.dialog = 0; }
         Text {
-            text: L.t("Sections shown in the filter panel:", "Какие разделы показывать в панели фильтров:");
-            color: Theme.dim;
-            font-size: 13px;
+            text: L.t("By choosing the «Recommended» option below, Wallpaper Engine will apply the optimal resolution filters for your system.", "При выборе опции «Рекомендованное» Wallpaper Engine применит фильтры оптимального разрешения для вашей системы.");
+            color: Theme.text;
+            font-size: Theme.size;
             wrap: word-wrap;
         }
-        Rectangle { height: 6px; }
-        for group[gi] in root.groups: Check {
-            text: group.title;
-            checked: group.wanted;
-            toggled => { root.group-shown(gi); }
+        Rectangle { height: 14px; }
+        Text {
+            text: L.t("If you would like to see wallpapers that might not be a good match for your screen setup or if you are specifically looking to use pixel art wallpapers, you should select the «All Resolutions» option.", "Если вы хотите установить обои, которые не подходят к настройкам вашего экрана, или если вы специально хотите использовать обои с пиксельной графикой, вам следует выбрать опцию «Все разрешения».");
+            color: Theme.text;
+            font-size: Theme.size;
+            wrap: word-wrap;
         }
-        Rectangle { height: 12px; }
+        Rectangle { height: 15px; }
+        HorizontalLayout {
+            alignment: center;
+            spacing: 10px;
+            Btn {
+                height: 46px;
+                pad: 16px;
+                font-size: 18px;
+                kind: root.resolution-recommended ? 3 : 0;
+                text: L.t("Recommended", "Рекомендованное");
+                clicked => { root.resolution-changed(true, root.other-resolution); }
+            }
+            Btn {
+                height: 46px;
+                pad: 16px;
+                font-size: 18px;
+                kind: root.resolution-recommended ? 0 : 5;
+                text: L.t("All Resolutions", "Все разрешения");
+                clicked => { root.resolution-changed(false, root.other-resolution); }
+            }
+        }
+        Rectangle { height: 15px; }
+        HorizontalLayout {
+            alignment: center;
+            Check {
+                text: " " + L.t("Show wallpapers with unknown resolution.", "Показать обои с неизвестным разрешением.");
+                checked: root.other-resolution;
+                toggled => { root.resolution-changed(root.resolution-recommended, !root.other-resolution); }
+            }
+        }
+        Rectangle { height: 10px; }
+        Text {
+            text: L.t("Turning this option off will hide all wallpapers with the «Other resolution» tag.", "Отключение этого параметра приведет к скрытию всех обоев с тегом «Другое разрешение».");
+            color: Theme.text;
+            font-size: Theme.size;
+            font-italic: true;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        Rectangle { height: 16px; }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 5px;
+            Btn {
+                width: 95px;
+                kind: 1;
+                text: L.t("OK", "ОК");
+                clicked => { root.dialog = 0; }
+            }
+            Btn {
+                width: 95px;
+                text: L.t("Cancel", "Отмена");
+                clicked => { root.dialog = 0; }
+            }
+        }
+        Rectangle { height: 16px; }
     }
 
     if root.dialog == 4: Dialog {
         title: L.t("Playlist settings", "Настройка плейлиста");
         closed => { root.dialog = 0; }
         HorizontalLayout {
-            height: 30px;
+            height: 34px;
             spacing: 10px;
             Text {
-                width: 190px;
-                text: L.t("Change wallpaper every, min", "Менять обои каждые, мин");
+                width: 220px;
+                text: L.t("Change wallpaper every, min:", "Менять обои каждые, мин:");
                 color: Theme.text;
-                font-size: 14px;
+                font-size: Theme.size;
                 vertical-alignment: center;
             }
-            Slider {
+            Rail {
                 horizontal-stretch: 1;
+                y: (parent.height - self.height) / 2;
                 minimum: 1;
                 maximum: 240;
                 value: root.playlist-minutes;
@@ -1706,8 +1911,8 @@ export component AppWindow inherits Window {
             Text {
                 width: 40px;
                 text: root.playlist-minutes;
-                color: Theme.dim;
-                font-size: 14px;
+                color: Theme.text;
+                font-size: Theme.size;
                 vertical-alignment: center;
                 horizontal-alignment: right;
             }
@@ -1716,34 +1921,33 @@ export component AppWindow inherits Window {
             height: 34px;
             spacing: 10px;
             Text {
-                width: 190px;
-                text: L.t("Order", "Порядок");
+                width: 220px;
+                text: L.t("Order:", "Порядок:");
                 color: Theme.text;
-                font-size: 14px;
+                font-size: Theme.size;
                 vertical-alignment: center;
             }
-            Dropdown {
+            Rectangle {
                 horizontal-stretch: 1;
-                options: [L.t("In order", "По порядку"), L.t("Random", "Случайный")];
-                index <=> root.playlist-order;
+                DropList {
+                    y: (parent.height - self.height) / 2;
+                    width: parent.width;
+                    options: [L.t("In order", "По порядку"), L.t("Random", "Случайный")];
+                    index <=> root.playlist-order;
+                }
             }
         }
-        Rectangle { height: 6px; }
+        Rectangle { height: 8px; }
         Text {
             text: L.t("Wallpapers in the playlist: ", "В плейлисте обоев: ") + root.playlist.length + (root.playlist-running ? L.t(". The playlist is running.", ". Плейлист идёт.") : L.t(". The playlist is stopped.", ". Плейлист остановлен."));
-            color: Theme.dim;
-            font-size: 13px;
+            color: Theme.faint;
+            font-size: Theme.size;
         }
-        Rectangle { height: 12px; }
+        Rectangle { height: 16px; }
         HorizontalLayout {
             alignment: end;
-            spacing: 8px;
-            WeButton {
-                text: L.t("Clear", "Очистить");
-                enabled: root.playlist.length > 0;
-                clicked => { root.playlist-clear(); }
-            }
-            if root.playlist-running: WeButton {
+            spacing: 10px;
+            if root.playlist-running: Btn {
                 width: 130px;
                 text: L.t("Stop", "Остановить");
                 clicked => {
@@ -1751,53 +1955,145 @@ export component AppWindow inherits Window {
                     root.dialog = 0;
                 }
             }
-            WeButton {
+            Btn {
                 width: 130px;
+                kind: 1;
                 text: root.playlist-running ? L.t("Restart", "Перезапустить") : L.t("Start", "Запустить");
-                primary: true;
                 enabled: root.playlist.length > 0;
                 clicked => {
                     root.playlist-start();
                     root.dialog = 0;
                 }
             }
+            Btn {
+                width: 95px;
+                text: L.t("Cancel", "Отмена");
+                clicked => { root.dialog = 0; }
+            }
         }
-        Rectangle { height: 12px; }
+        Rectangle { height: 16px; }
     }
 
-    if root.dialog == 5: Dialog {
-        title: L.t("Load a playlist", "Загрузить плейлист");
+    if root.dialog == 5 || root.dialog == 7 || root.dialog == 10: Dialog {
+        property <bool> of-presets: root.dialog == 7;
+        property <[string]> names: root.dialog == 10 ? root.profiles : self.of-presets ? root.presets : root.playlist-saved;
+        title: root.dialog == 10 ? L.t("Load profile", "Загрузить профиль") : self.of-presets ? L.t("Load a preset", "Загрузить пресет") : L.t("Load a playlist", "Загрузить плейлист");
         panel-width: 380px;
         closed => { root.dialog = 0; }
-        if root.playlist-saved.length == 0: Text {
-            text: L.t("No saved playlists. Build one with \"Add wallpaper\" and press \"Save\".", "Сохранённых плейлистов нет. Собери плейлист кнопкой «Добавить обои» и нажми «Сохранить».");
-            color: Theme.dim;
-            font-size: 13px;
+        if self.names.length == 0: Text {
+            text: root.dialog == 10 ? L.t("No saved profiles yet.", "Сохранённых профилей пока нет.") : parent.of-presets ? L.t("No saved presets of this wallpaper yet.", "У этих обоев пока нет сохранённых пресетов.")
+                : L.t("No saved playlists. Build one with \"Add wallpaper\" and press \"Save\".", "Сохранённых плейлистов нет. Собери плейлист кнопкой «Добавить обои» и нажми «Сохранить».");
+            color: Theme.faint;
+            font-size: Theme.size;
             wrap: word-wrap;
         }
-        for name[i] in root.playlist-saved: VerticalLayout {
-            padding-top: 4px;
+        for name[i] in self.names: VerticalLayout {
+            padding-bottom: 4px;
             Rectangle {
-                height: 32px;
-                border-width: 1px;
-                border-color: Theme.line;
-                background: sta.has-hover ? Theme.accent : Theme.well;
+                height: 28px;
+                background: sta.has-hover ? Theme.primary : Theme.button;
+                animate background { duration: 70ms; }
                 Text {
-                    x: 10px;
+                    x: 12px;
                     text: name;
                     color: Theme.text;
-                    font-size: 14px;
+                    font-size: Theme.size;
                     vertical-alignment: center;
                 }
                 sta := TouchArea {
                     clicked => {
-                        root.playlist-load(i);
+                        if (root.dialog == 7) {
+                            root.preset-load(i);
+                        } else if (root.dialog == 10) {
+                            root.profile-load(i);
+                        } else {
+                            root.playlist-load(i);
+                        }
                         root.dialog = 0;
                     }
                 }
             }
         }
-        Rectangle { height: 12px; }
+        Rectangle { height: 16px; }
+    }
+
+    if root.dialog == 8 || root.dialog == 11: Dialog {
+        title: root.dialog == 11 ? L.t("Save profile", "Сохранить профиль") : L.t("Save a preset", "Сохранить пресет");
+        panel-width: 380px;
+        closed => { root.dialog = 0; }
+        Field {
+            text <=> root.preset-name;
+            placeholder: L.t("Preset name", "Название пресета");
+            accepted(name) => {
+                if (root.dialog == 11) {
+                    root.profile-save(name);
+                } else {
+                    root.preset-save(name);
+                }
+                root.dialog = 0;
+            }
+        }
+        Rectangle { height: 14px; }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 10px;
+            Btn {
+                width: 95px;
+                kind: 1;
+                text: "OK";
+                enabled: root.preset-name != "";
+                clicked => {
+                    if (root.dialog == 11) {
+                        root.profile-save(root.preset-name);
+                    } else {
+                        root.preset-save(root.preset-name);
+                    }
+                    root.dialog = 0;
+                }
+            }
+            Btn {
+                width: 95px;
+                text: L.t("Cancel", "Отмена");
+                clicked => { root.dialog = 0; }
+            }
+        }
+        Rectangle { height: 16px; }
+    }
+
+    // "…" under the grid: which page.
+    if root.dialog == 12: Dialog {
+        title: L.t("Enter page #", "Открыть страницу #");
+        panel-width: 380px;
+        closed => { root.dialog = 0; }
+        Field {
+            text <=> root.preset-name;
+            max-length: 6;
+            accepted(text) => {
+                root.page-clicked(text.to-float());
+                root.dialog = 0;
+            }
+        }
+        Rectangle { height: 14px; }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 10px;
+            Btn {
+                width: 95px;
+                kind: 1;
+                text: "OK";
+                enabled: root.preset-name.is-float() && root.preset-name.to-float() >= 1;
+                clicked => {
+                    root.page-clicked(root.preset-name.to-float());
+                    root.dialog = 0;
+                }
+            }
+            Btn {
+                width: 95px;
+                text: L.t("Cancel", "Отмена");
+                clicked => { root.dialog = 0; }
+            }
+        }
+        Rectangle { height: 16px; }
     }
 
     if root.dialog == 6: Dialog {
@@ -1806,29 +2102,35 @@ export component AppWindow inherits Window {
         closed => { root.dialog = 0; }
         Text {
             text: L.t("Sending wallpapers to a phone works only with the Wallpaper Engine app for Android and its own pairing protocol. That is not here.", "Передача обоев на телефон работает только с приложением Wallpaper Engine для Android и его собственным протоколом сопряжения. Здесь этого нет.");
-            color: Theme.dim;
-            font-size: 13px;
+            color: Theme.text;
+            font-size: Theme.size;
             wrap: word-wrap;
         }
-        Rectangle { height: 14px; }
+        Rectangle { height: 16px; }
     }
-    // The hint of an (i), over the dialogs.
+
+    // The window's blue frame, over everything but the hints.
+    Rectangle {
+        border-width: 1px;
+        border-color: Theme.primary;
+    }
+
+    // The hint of a (?), over the dialogs.
     if Tip.text != "": Rectangle {
         x: max(8px, min(Tip.x - 12px, root.width - self.width - 8px));
         y: min(Tip.y, root.height - self.height - 8px);
-        width: 340px;
-        height: hint.preferred-height + 18px;
-        background: #11151c;
+        width: 320px;
+        height: hint.preferred-height + 14px;
+        background: Theme.menu;
         border-width: 1px;
-        border-color: Theme.accent;
-        border-radius: 3px;
+        border-color: Theme.primary;
         hint := Text {
-            x: 11px;
-            y: 9px;
-            width: parent.width - 22px;
+            x: 9px;
+            y: 7px;
+            width: parent.width - 18px;
             text: Tip.text;
             color: Theme.text;
-            font-size: 12px;
+            font-size: 12.6px;
             wrap: word-wrap;
         }
     }

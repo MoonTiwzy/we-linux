@@ -1,0 +1,57 @@
+// The look of the window: the colours and sizes of Wallpaper Engine's dark theme.
+
+// The interface language: every text is written in both, the window picks.
+export global L {
+    in-out property <bool> russian;
+    pure public function t(english: string, russian-text: string) -> string {
+        return self.russian ? russian-text : english;
+    }
+}
+
+// The hint of what the pointer is over: drawn by the window, over everything.
+export global Tip {
+    in-out property <string> text;
+    in-out property <length> x;
+    in-out property <length> y;
+}
+
+export global Theme {
+    // The family the system gives for Arial, found when the program starts.
+    in-out property <string> font: "Liberation Sans";
+    out property <length> size: 14px;
+
+    out property <color> bg: #222222;
+    out property <color> text: #eeeeee;
+    out property <color> white: #ffffff;
+    out property <color> faint: #999999;
+    out property <color> caption: #bbbbbb;
+
+    out property <color> primary: #4183f5;
+    out property <color> primary-hover: #1163f2;
+    out property <color> primary-pressed: #0b55d4;
+    out property <color> primary-light: #5992f6;
+
+    out property <color> button: #3c3c3c;
+    out property <color> button-border: #434343;
+    out property <color> button-hover: #2f2f2f;
+    out property <color> button-hover-border: #363636;
+
+    out property <color> danger: #d9534f;
+    out property <color> danger-hover: #c9302c;
+    out property <color> success: #5cb85c;
+    out property <color> success-hover: #449d44;
+    out property <color> info: #1163f2;
+    out property <color> info-hover: #0b4fc5;
+
+    out property <color> field: #090909;
+    out property <color> field-border: #3c3c3c;
+    out property <color> field-text: #d4d4d4;
+
+    out property <color> menu: #484848;
+    out property <color> menu-hover: #626262;
+
+    out property <color> filtered: #fbc476;
+    out property <color> approved: #beffb2;
+    out property <color> favorite: #ff36d2;
+    out property <color> portrait: #e1ad01;
+}

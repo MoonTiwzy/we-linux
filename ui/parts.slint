@@ -1,0 +1,403 @@
+// The larger pieces of the window: a wallpaper in the grid, the page numbers, a property row.
+
+import { Theme, L, Tip } from "theme.slint";
+import { Icons, Icon, Glyph } from "icons.slint";
+import { Btn, Check, DropList, Field, Rail } from "widgets.slint";
+
+export struct Item {
+    title: string,
+    image: image,
+    loaded: bool,
+    kind: string,
+    approved: bool,
+    subscribed: bool,
+    favorite: bool,
+    /// 0..1 while it downloads, -1 otherwise.
+    progress: float,
+}
+
+export struct PageButton {
+    label: string,
+    page: int,
+    current: bool,
+}
+
+/// One user property of the selected wallpaper.
+/// kind: 0 bool, 1 slider, 2 color, 3 combo, 4 text input, 5 label, 6 group.
+export struct Prop {
+    label: string,
+    kind: int,
+    on: bool,
+    number: float,
+    min: float,
+    max: float,
+    text: string,
+    options: [string],
+    index: int,
+    swatch: color,
+    /// The renderer does what it asks; else the row is greyed, `hint` says why.
+    usable: bool,
+    hint: string,
+    /// The combo's choices the renderer can do (empty: all).
+    usable-options: [bool],
+}
+
+// A wallpaper in the grid: its picture, the name on a dark band, the marks in a tab at the left.
+export component Tile inherits Rectangle {
+    in property <Item> item;
+    in property <bool> selected;
+    // The save mark shows only where not everything is installed anyway.
+    in property <bool> show-installed;
+    callback clicked;
+    callback activated;
+    /// The right button, where it was pressed.
+    callback context(length, length);
+    drop-shadow-offset-x: 2px;
+    drop-shadow-offset-y: 2px;
+    drop-shadow-blur: 3px;
+    drop-shadow-color: #00000066;
+    Rectangle {
+        clip: true;
+        Image {
+            // The original's background: as wide as the tile and a hundredth more,
+            // a fifth more under the pointer, its height by its own shape.
+            property <float> zoom: ta.has-hover ? 1.2 : 1.01;
+            animate zoom { duration: 200ms; }
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: parent.width * self.zoom;
+            height: self.source.width > 0 ? self.width * self.source.height / self.source.width : parent.height * self.zoom;
+            source: root.item.image;
+            image-fit: fill;
+        }
+    }
+    Rectangle {
+        y: parent.height - self.height;
+        height: 40px;
+        background: ta.has-hover ? #00000033 : #00000080;
+        animate background { duration: 200ms; }
+        Text {
+            x: 2px;
+            y: 5px;
+            width: parent.width - 4px;
+            height: parent.height - 7px;
+            text: root.item.title;
+            color: ta.has-hover ? Theme.white : Theme.caption;
+            font-size: 11.2px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            wrap: word-wrap;
+            overflow: elide;
+        }
+    }
+    if root.item.approved || root.item.favorite || (root.item.subscribed && root.show-installed): Rectangle {
+        x: 0;
+        y: 6px;
+        width: marks.preferred-width + 11px;
+        height: 20px;
+        background: #00000080;
+        border-top-right-radius: 5px;
+        border-bottom-right-radius: 5px;
+        opacity: ta.has-hover ? 0.4 : 1;
+        animate opacity { duration: 200ms; }
+        marks := HorizontalLayout {
+            x: 5px;
+            spacing: 2px;
+            alignment: start;
+            if root.item.approved: Rectangle {
+                width: 14.2px;
+                Icon {
+                    x: 2px;
+                    y: (parent.height - self.height) / 2;
+                    glyph: Icons.trophy;
+                    size: 12.6px;
+                    tint: Theme.approved;
+                }
+            }
+            if root.item.favorite: Rectangle {
+                width: 14.6px;
+                Icon {
+                    x: 2px;
+                    y: (parent.height - self.height) / 2;
+                    glyph: Icons.heart;
+                    size: 12.6px;
+                    tint: Theme.favorite;
+                }
+            }
+            if root.item.subscribed && root.show-installed: Rectangle {
+                width: 13px;
+                Icon {
+                    x: 2px;
+                    y: (parent.height - self.height) / 2;
+                    glyph: Icons.floppy-disk;
+                    size: 12.6px;
+                    tint: Theme.text;
+                }
+            }
+        }
+    }
+    if root.item.progress >= 0: Rectangle {
+        y: parent.height - 4px;
+        height: 4px;
+        background: #00000090;
+        Rectangle {
+            x: 0;
+            width: parent.width * clamp(root.item.progress, 0, 1);
+            background: Theme.primary;
+        }
+    }
+    Rectangle {
+        border-width: root.selected ? 3px : ta.has-hover ? 1px : 0;
+        border-color: root.selected ? Theme.primary : #71a3f8cc;
+    }
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+        double-clicked => { root.activated(); }
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.right) {
+                root.context(self.mouse-x, self.mouse-y);
+            }
+        }
+    }
+}
+
+// The page numbers under the grid: grey boxes, the numbers blue, the current
+// one white; "…" asks for a number.
+export component Pager inherits HorizontalLayout {
+    in property <[PageButton]> pages;
+    callback clicked(int);
+    callback ask();
+    alignment: center;
+    spacing: 4px;
+    height: 27px;
+    for page in root.pages: Rectangle {
+        property <bool> arrow: page.label == "«" || page.label == "»";
+        property <bool> gap: page.page == 0;
+        y: 5px;
+        height: 22px;
+        width: self.arrow ? 41px : max(20px, label.preferred-width + 4px);
+        border-radius: 3px;
+        background: pta.has-hover ? Theme.primary : self.gap ? transparent : Theme.button;
+        if self.arrow: Icon {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            glyph: page.label == "«" ? Icons.angles-left : Icons.angles-right;
+            size: 16.8px;
+            tint: pta.has-hover ? Theme.white : Theme.primary;
+        }
+        label := Text {
+            visible: !parent.arrow;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            text: page.label;
+            color: page.current || parent.gap ? Theme.text : pta.has-hover ? Theme.white : Theme.primary;
+            font-size: 16.8px;
+        }
+        pta := TouchArea {
+            clicked => {
+                if (page.page == 0) {
+                    root.ask();
+                } else {
+                    root.clicked(page.page);
+                }
+            }
+        }
+    }
+}
+
+// One property of a wallpaper: the name at the left, the control at the right.
+export component PropRow inherits VerticalLayout {
+    in property <Prop> prop;
+    callback toggled(bool);
+    callback number(float);
+    callback text(string);
+    callback index(int);
+    padding-top: prop.kind == 6 ? 8px : 0px;
+    if prop.kind == 6: Text {
+        text: prop.label;
+        color: Theme.text;
+        font-size: Theme.size;
+        font-weight: 700;
+        wrap: word-wrap;
+    }
+    if prop.kind == 5: Text {
+        text: prop.label;
+        color: Theme.faint;
+        font-size: 12.6px;
+        wrap: word-wrap;
+    }
+    if prop.kind >= 0 && prop.kind <= 4: HorizontalLayout {
+        spacing: 8px;
+        min-height: 28px;
+        opacity: prop.usable ? 1 : 0.5;
+        Text {
+            horizontal-stretch: 1;
+            min-width: 60px;
+            text: prop.label;
+            color: Theme.text;
+            font-size: 12.6px;
+            vertical-alignment: center;
+            wrap: word-wrap;
+            TouchArea {
+                changed has-hover => {
+                    if prop.hint != "" {
+                        if self.has-hover {
+                            Tip.text = prop.hint;
+                            Tip.x = self.absolute-position.x;
+                            Tip.y = self.absolute-position.y + self.height;
+                        } else if Tip.text == prop.hint {
+                            Tip.text = "";
+                        }
+                    }
+                }
+            }
+        }
+        if prop.kind == 0: Rectangle {
+            width: 134px;
+            Check {
+                enabled: prop.usable;
+                x: parent.width - self.width;
+                width: 22px;
+                height: parent.height;
+                checked: prop.on;
+                toggled => { root.toggled(!prop.on); }
+            }
+        }
+        if prop.kind == 1: HorizontalLayout {
+            width: 134px;
+            spacing: 6px;
+            Rail {
+                enabled: prop.usable;
+                horizontal-stretch: 1;
+                y: (parent.height - self.height) / 2;
+                minimum: prop.min;
+                maximum: prop.max;
+                value: prop.number;
+                released(value) => { root.number(value); }
+            }
+            Text {
+                width: 34px;
+                text: round(prop.number * 100) / 100;
+                color: Theme.text;
+                font-size: 12.6px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+        }
+        if prop.kind == 2: HorizontalLayout {
+            width: 134px;
+            spacing: 4px;
+            Rectangle {
+                y: (parent.height - self.height) / 2;
+                width: 26px;
+                height: 22px;
+                border-width: 1px;
+                border-color: Theme.button-border;
+                background: prop.swatch;
+            }
+            Field {
+                horizontal-stretch: 1;
+                y: (parent.height - self.height) / 2;
+                height: 24px;
+                font-size: 12px;
+                text: prop.text;
+                placeholder: "#rrggbb";
+                accepted(text) => { root.text(text); }
+            }
+        }
+        if prop.kind == 3: Rectangle {
+            width: 134px;
+            DropList {
+                enabled: prop.usable;
+                usable: prop.usable-options;
+                y: (parent.height - self.height) / 2;
+                width: parent.width;
+                height: 24px;
+                pad: 8px;
+                font-size: 12.6px;
+                options: prop.options;
+                index: prop.index;
+                selected(i) => { root.index(i); }
+            }
+        }
+        if prop.kind == 4: Rectangle {
+            width: 134px;
+            Field {
+                y: (parent.height - self.height) / 2;
+                width: parent.width;
+                height: 24px;
+                font-size: 12px;
+                text: prop.text;
+                accepted(text) => { root.text(text); }
+            }
+        }
+    }
+}
+
+// A tab of the source row ("Установлено", "Рекомендации", "Мастерская"): framed in
+// blue on three sides, the line under the row closes it; the active one is filled
+// and stands two pixels higher.
+export component SourceTab inherits Rectangle {
+    in property <bool> active;
+    in property <Glyph> icon;
+    in property <string> text;
+    // "Установлено" has its menu's caret after the text.
+    in property <bool> caret;
+    // The text in the middle of a tab wider than it (the narrow window).
+    in property <bool> centered;
+    callback clicked;
+    callback entered;
+    out property <bool> hovered: ta.has-hover;
+    out property <length> natural: row.preferred-width + 2px;
+    y: root.active ? 0 : 2px;
+    height: root.active ? 29px : 27px;
+    background: root.active ? Theme.primary : ta.has-hover ? Theme.primary-hover : Theme.bg;
+    animate background { duration: 200ms; easing: linear; }
+    Rectangle { x: 0; y: 0; width: parent.width; height: 1px; background: Theme.primary; }
+    Rectangle { x: 0; y: 0; width: 1px; height: parent.height; background: Theme.primary; }
+    Rectangle { x: parent.width - 1px; y: 0; width: 1px; height: parent.height; background: Theme.primary; }
+    row := HorizontalLayout {
+        x: root.centered ? (parent.width - self.preferred-width) / 2 : 1px;
+        width: self.preferred-width;
+        y: root.active ? 3px : 1px;
+        height: 24px;
+        padding-left: 4px;
+        padding-right: 4px;
+        spacing: 0px;
+        Rectangle {
+            width: mark.width;
+            mark := Icon {
+                y: (parent.height - self.height) / 2;
+                glyph: root.icon;
+                size: 16.8px;
+                tint: root.active || ta.has-hover ? Theme.white : Theme.text;
+            }
+        }
+        // A space, as between the spans of the original.
+        Rectangle { width: 4.7px; }
+        Text {
+            text: root.text;
+            color: root.active || ta.has-hover ? Theme.white : Theme.text;
+            font-size: 16.8px;
+            vertical-alignment: center;
+        }
+        if root.caret: Rectangle { width: 4.7px; }
+        if root.caret: Rectangle {
+            width: tip.width;
+            tip := Icon {
+                y: (parent.height - self.height) / 2;
+                glyph: Icons.caret-down;
+                size: 16.8px;
+                tint: root.active ? Theme.white : Theme.text;
+            }
+        }
+    }
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+        changed has-hover => {
+            if self.has-hover {
+                root.entered();
+            }
+        }
+    }
+}

@@ -150,9 +150,10 @@ still off with `"still": false` in the settings file if you want your own pictur
 
 **Fullscreen.** A monitor that shows a fullscreen window (a game, a video) keeps the
 wallpaper's last frame and does no work; when the desktop is back, the wallpaper goes on from
-that frame. Other monitors keep playing. If you would rather give a game the video memory,
-turn on "Stop the engine when every monitor is fullscreen" in Settings: then the scene starts
-over afterwards.
+that frame. Other monitors keep playing. Settings, "Playback", has the original's choices for
+a fullscreen window, a maximised one, a focused one, another program's sound and a sleeping
+monitor: keep running, mute, pause (that monitor or all of them) or stop, which gives a game the
+video memory once every monitor is stopped (the scene starts over afterwards).
 
 **Colours from the wallpaper.** Set a hook and it runs on every wallpaper change with a still
 frame to take colours from:
@@ -163,7 +164,8 @@ frame to take colours from:
 ```
 
 The hook gets `WE_LINUX_WALLPAPER` (the wallpaper's folder), `WE_LINUX_STILL` (a PNG or JPEG of
-it) and `WE_LINUX_TITLE`.
+it) and `WE_LINUX_TITLE`. What it prints goes to `$XDG_RUNTIME_DIR/we-linux/hook.log` (the last
+run's), not to the terminal the daemon was started from.
 
 <details>
 <summary>What the daemon runs for the layer rule</summary>
@@ -206,7 +208,7 @@ A picture is handed to awww, swww or hyprpaper, whichever runs (awww is the test
 ## Settings
 
 The window's **Settings** covers the language, the frame rate, where scene videos are decoded,
-sound, fullscreen behaviour and the still frame, each with a hint on its (i). The file has the
+sound, playback under other windows and the still frame, each with a hint under the pointer. The file has the
 same switches and the hook:
 
 ```jsonc
@@ -216,8 +218,12 @@ same switches and the hook:
   "video_gpu": false,        // decode scene videos on the GPU: less CPU, more video memory
   "audio": false,
   "volume": 50,
-  "pause_fullscreen": true,  // Hyprland: freeze a monitor that shows a fullscreen window
-  "stop_fullscreen": false,  // Hyprland: stop the engine while every monitor is fullscreen
+  // "Playback": "run", "mute", "pause" (that monitor), "pauseall" or "stop"
+  "playback_fullscreen": "pause",  // Hyprland: a fullscreen window on the monitor
+  "playback_maximized": "run",     // Hyprland: a window maximised over it
+  "playback_focus": "run",         // Hyprland: a window has the focus there
+  "playback_audio": "run",         // another program plays sound (pactl)
+  "playback_sleep": "run",         // Hyprland: the monitor's power is off
   "still": true,             // give awww/swww/hyprpaper a still of the wallpaper
   "hook": ""                 // a shell command run when the wallpaper changes
 }
@@ -230,6 +236,7 @@ same switches and the hook:
 | The playlist and saved playlists | `~/.config/we-linux/playlist.json`, `playlists/` |
 | Preview and still caches | `~/.cache/we-linux/` |
 | The renderer's log | `$XDG_RUNTIME_DIR/we-linux/engine.log` |
+| What the hook printed last | `$XDG_RUNTIME_DIR/we-linux/hook.log` |
 
 ## Troubleshooting
 
@@ -277,6 +284,9 @@ memory.
 
 - [wepaper](https://github.com/MoonTiwzy/wepaper): the renderer.
 - [Slint](https://slint.dev) for the interface.
+- The icons are [Font Awesome Free](https://fontawesome.com) 6.7.2 by Fonticons, Inc., licensed
+  under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) (`ui/icons.slint` holds their
+  outlines unchanged).
 - [awww](https://codeberg.org/LGFae/awww), swww and hyprpaper, which it plays nicely with.
 
 ## License

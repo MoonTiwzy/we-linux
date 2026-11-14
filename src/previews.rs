@@ -23,6 +23,8 @@ pub struct Job {
     pub generation: u64,
     /// The side panel's picture rather than a grid cell's.
     pub large: bool,
+    /// Every frame of an animated preview, not the first only.
+    pub animate: bool,
 }
 
 pub struct Decoded {
@@ -34,8 +36,8 @@ pub struct Decoded {
     pub rgba: Vec<u8>,
     /// How long the first frame of an animated preview shows, in milliseconds.
     pub delay: u32,
-    /// The rest of an animated preview (large jobs only): frames the size of
-    /// the first, each with how long it shows in milliseconds.
+    /// The rest of an animated preview (jobs that animate): frames the size
+    /// of the first, each with how long it shows in milliseconds.
     pub frames: Vec<(Vec<u8>, u32)>,
 }
 
@@ -92,13 +94,15 @@ fn fetch(url: &str, id: u64) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-/// What the frames of one animated preview may take, decoded.
+/// What the frames of the side panel's animated preview may take, decoded.
 const ANIMATION_BYTES: usize = 24 << 20;
+/// What the frames of a grid cell's may take: a screenful of cells plays.
+const CELL_ANIMATION_BYTES: usize = 4 << 20;
 
 /// The frames of a GIF (up to 150 are read), all at the size of the first and
 /// no larger than `size`. A long one loses frames evenly (their time goes to
-/// the ones kept) until it fits [`ANIMATION_BYTES`].
-fn animation(bytes: &[u8], size: u32) -> Option<Vec<(image::RgbaImage, u32)>> {
+/// the ones kept) until it fits `budget`.
+fn animation(bytes: &[u8], size: u32, budget: usize) -> Option<Vec<(image::RgbaImage, u32)>> {
     use image::AnimationDecoder;
     if !bytes.starts_with(b"GIF8") {
         return None;
@@ -120,7 +124,7 @@ fn animation(bytes: &[u8], size: u32) -> Option<Vec<(image::RgbaImage, u32)>> {
         out.push((frame, delay));
     }
     let bytes: usize = out.iter().map(|(f, _)| f.as_raw().len()).sum();
-    let step = bytes.div_ceil(ANIMATION_BYTES).max(1);
+    let step = bytes.div_ceil(budget).max(1);
     if step > 1 {
         out = out
             .chunks(step)
@@ -135,15 +139,16 @@ fn decode(job: &Job) -> Result<Decoded, String> {
         Source::Url(url) => fetch(url, job.id)?,
         Source::File(path) => std::fs::read(path).map_err(|e| e.to_string())?,
     };
-    if job.large
-        && let Some(mut frames) = animation(&bytes, job.size)
+    let budget = if job.large { ANIMATION_BYTES } else { CELL_ANIMATION_BYTES };
+    if job.animate
+        && let Some(mut frames) = animation(&bytes, job.size, budget)
     {
         let (first, delay) = frames.remove(0);
         let (width, height) = (first.width(), first.height());
         return Ok(Decoded {
             id: job.id,
             generation: job.generation,
-            large: true,
+            large: job.large,
             width,
             height,
             rgba: first.into_raw(),

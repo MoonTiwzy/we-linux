@@ -1,0 +1,653 @@
+// The controls of the window, drawn to the measures of Wallpaper Engine's own.
+
+import { Theme, L, Tip } from "theme.slint";
+import { Icons, Icon, Glyph } from "icons.slint";
+
+// A button: flat, square, 26px tall with the usual letter.
+// kind: 0 grey, 1 blue, 2 red, 3 green, 4 deep blue, 5 orange.
+export component Btn inherits Rectangle {
+    in property <string> text;
+    in property <Glyph> icon;
+    in property <int> kind;
+    in property <bool> enabled: true;
+    in property <length> font-size: Theme.size;
+    in property <length> pad: 6px;
+    in property <length> gap: 4px;
+    in property <length> icon-size: self.font-size;
+    in property <color> icon-tint: Theme.white;
+    // The icon stands alone and is centred on a box one and a quarter letters wide.
+    in property <bool> fixed-icon;
+    // A second text after the first, in a colour of its own ("(Отфильтровано)").
+    in property <string> after;
+    // The hint the original shows under the pointer.
+    in property <string> tip;
+    in property <color> after-color: Theme.text;
+    callback clicked;
+    out property <bool> hovered: ta.has-hover && root.enabled;
+    horizontal-stretch: 0;
+    height: 26px;
+    min-width: lay.preferred-width + 2px;
+    opacity: enabled ? 1 : 0.65;
+    border-width: 1px;
+    border-color: kind == 1 ? (hovered ? #0b55d4 : #2973f4)
+        : kind == 2 ? (hovered ? #ac2925 : #d43e3a)
+        : kind == 3 ? (hovered ? #398439 : #4cae4c)
+        : kind == 4 ? (hovered ? #0941a3 : #0c58dd)
+        : kind == 5 ? (hovered ? #985f0d : #eea236)
+        : hovered ? Theme.button-hover-border : Theme.button-border;
+    background: kind == 1 ? (ta.pressed && enabled ? Theme.primary-pressed : hovered ? Theme.primary-hover : Theme.primary)
+        : kind == 2 ? (hovered ? Theme.danger-hover : Theme.danger)
+        : kind == 3 ? (hovered ? Theme.success-hover : Theme.success)
+        : kind == 4 ? (hovered ? Theme.info-hover : Theme.info)
+        : kind == 5 ? (hovered ? #ec971f : #f0ad4e)
+        : hovered ? Theme.button-hover : Theme.button;
+    animate background { duration: 70ms; }
+    lay := HorizontalLayout {
+        padding-left: root.pad;
+        padding-right: root.pad;
+        spacing: root.gap;
+        alignment: center;
+        if root.icon.w > 0: Rectangle {
+            width: root.fixed-icon ? root.icon-size * 1.25 : glyph.width;
+            glyph := Icon {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                glyph: root.icon;
+                size: root.icon-size;
+                tint: root.icon-tint;
+            }
+        }
+        if root.text != "": Text {
+            text: root.text;
+            color: root.kind == 0 ? Theme.text : Theme.white;
+            font-size: root.font-size;
+            vertical-alignment: center;
+        }
+        if root.after != "": Text {
+            text: root.after;
+            color: root.after-color;
+            font-size: root.font-size;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+        changed has-hover => {
+            if root.tip != "" {
+                if self.has-hover {
+                    Tip.text = root.tip;
+                    Tip.x = root.absolute-position.x;
+                    Tip.y = root.absolute-position.y + root.height + 4px;
+                } else if Tip.text == root.tip {
+                    Tip.text = "";
+                }
+            }
+        }
+    }
+}
+
+// A check box: a blue square of the icon set, a filled one with a tick when checked.
+export component Check inherits Rectangle {
+    in property <string> text;
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    // A filter: checked is a green plus.
+    in property <bool> tag;
+    in property <length> font-size: Theme.size;
+    // How large the square is drawn, as a letter size.
+    in property <length> box: self.font-size * 1.6;
+    in property <color> text-color: Theme.text;
+    callback toggled;
+    min-height: self.font-size * 1.43;
+    opacity: enabled ? 1 : 0.5;
+    HorizontalLayout {
+        alignment: start;
+        Rectangle {
+            width: root.box * 0.875 + 2px;
+            Icon {
+                x: 0;
+                y: (parent.height - self.height) / 2;
+                glyph: !root.checked ? Icons.square-regular : root.tag ? Icons.square-plus : Icons.square-check;
+                size: root.box;
+                tint: root.checked && root.tag ? Theme.success : ta.has-hover ? Theme.primary-hover : Theme.primary;
+            }
+        }
+        if root.text != "": Text {
+            text: root.text;
+            color: root.checked && root.tag ? Theme.success : root.text-color;
+            font-size: root.font-size;
+            vertical-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.toggled(); }
+    }
+}
+
+// The small triangle of a drop-down.
+export component Caret inherits Path {
+    in property <color> tint: Theme.text;
+    width: 8px;
+    height: 4px;
+    viewbox-width: 8;
+    viewbox-height: 4;
+    commands: "M0 0 L8 0 L4 4 Z";
+    fill: tint;
+}
+
+// A drop-down list: a grey button with its text at the left (or in the middle)
+// and a caret at the right. An empty option is a divider; an option whose
+// `usable` is false is greyed and cannot be picked.
+export component DropList inherits Rectangle {
+    in property <[string]> options;
+    in property <[bool]> usable;
+    in-out property <int> index;
+    in property <bool> enabled: true;
+    in property <length> font-size: Theme.size;
+    in property <length> pad: 20px;
+    in property <bool> centered;
+    // The menu opens upwards (a list at the bottom of a window).
+    in property <bool> up;
+    callback selected(int);
+    height: 26px;
+    opacity: enabled ? 1 : 0.65;
+    border-width: 1px;
+    border-color: ta.has-hover && enabled ? Theme.button-hover-border : Theme.button-border;
+    background: ta.has-hover && enabled ? Theme.button-hover : Theme.button;
+    animate background { duration: 70ms; }
+    Text {
+        x: root.pad;
+        width: parent.width - root.pad * (root.centered ? 2 : 1) - (root.centered ? 0 : 18px);
+        text: root.index >= 0 && root.index < root.options.length ? root.options[root.index] : "";
+        color: Theme.text;
+        font-size: root.font-size;
+        vertical-alignment: center;
+        horizontal-alignment: root.centered ? center : left;
+        overflow: elide;
+    }
+    Caret {
+        x: parent.width - 5px - self.width;
+        y: (parent.height - self.height) / 2;
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.unfold = 0;
+            popup.show();
+            root.unfold = 1;
+        }
+    }
+    property <float> unfold;
+    popup := PopupWindow {
+        x: 0;
+        y: root.up ? -(list.preferred-height) : root.height;
+        width: root.width;
+        height: list.preferred-height;
+        Rectangle {
+            y: root.up ? parent.height * (1 - root.unfold) : 0;
+            height: parent.height * root.unfold;
+            animate y, height { duration: 100ms; easing: ease-out; }
+            clip: true;
+            background: Theme.menu;
+            list := VerticalLayout {
+                y: root.up ? parent.height - self.preferred-height : 0;
+                padding-top: 5px;
+                padding-bottom: 5px;
+                for option[i] in root.options: Rectangle {
+                    property <bool> can: option != "" && (i >= root.usable.length || root.usable[i]);
+                    height: option == "" ? 19px : 26px;
+                    background: row.has-hover && self.can ? Theme.menu-hover : Theme.menu;
+                    if option == "": Rectangle {
+                        y: 9px;
+                        height: 1px;
+                        background: #e5e5e5;
+                    }
+                    if option != "": Text {
+                        x: 20px;
+                        width: parent.width - 30px;
+                        text: option;
+                        color: Theme.text;
+                        opacity: parent.can ? 1 : 0.5;
+                        font-size: root.font-size;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    row := TouchArea {
+                        enabled: parent.can;
+                        clicked => {
+                            root.index = i;
+                            root.selected(i);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A field to type in: black, 34px tall.
+export component Field inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <length> font-size: Theme.size;
+    // Room kept free at the right, for an icon.
+    in property <length> right: 12px;
+    // The most letters it takes (0: no limit).
+    in property <int> max-length;
+    callback accepted(string);
+    callback edited(string);
+    out property <bool> focused: input.has-focus;
+    property <string> last;
+    height: 34px;
+    background: Theme.field;
+    border-width: 1px;
+    border-color: input.has-focus ? #66afe9 : Theme.field-border;
+    // Clipped: a long text scrolls inside the field, not under what is beside it.
+    Rectangle {
+        x: 12px;
+        width: parent.width - 12px - root.right;
+        clip: true;
+        input := TextInput {
+            width: parent.width;
+            height: parent.height;
+            vertical-alignment: center;
+            text <=> root.text;
+            color: Theme.field-text;
+            font-size: root.font-size;
+            single-line: true;
+            accepted => { root.accepted(self.text); }
+            edited => {
+                if root.max-length > 0 && self.text.character-count > root.max-length {
+                    self.text = root.last;
+                }
+                root.last = self.text;
+                root.edited(self.text);
+            }
+        }
+    }
+    if root.text == "": Text {
+        x: 12px;
+        height: parent.height;
+        vertical-alignment: center;
+        text: root.placeholder;
+        color: Theme.faint;
+        font-size: root.font-size;
+    }
+}
+
+// A slider: a thin grey rail, blue up to a blue handle.
+export component Rail inherits Rectangle {
+    in property <float> minimum: 0;
+    in property <float> maximum: 100;
+    in-out property <float> value;
+    in property <bool> enabled: true;
+    callback changed(float);
+    callback released(float);
+    property <float> part: maximum > minimum ? clamp((value - minimum) / (maximum - minimum), 0, 1) : 0;
+    height: 20px;
+    min-width: 60px;
+    opacity: enabled ? 1 : 0.5;
+    Rectangle {
+        x: 0;
+        y: (parent.height - 4px) / 2;
+        height: 4px;
+        border-radius: 2px;
+        background: #555555;
+    }
+    Rectangle {
+        x: 0;
+        y: (parent.height - 4px) / 2;
+        width: (parent.width - 8px) * root.part;
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.primary;
+    }
+    Rectangle {
+        x: (parent.width - 8px) * root.part;
+        y: (parent.height - 20px) / 2;
+        width: 8px;
+        height: 20px;
+        background: ta.has-hover || ta.pressed ? Theme.primary-light : Theme.primary;
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        moved => {
+            if (self.pressed) {
+                root.value = root.minimum + clamp((self.mouse-x - 4px) / (root.width - 8px), 0, 1) * (root.maximum - root.minimum);
+                root.changed(root.value);
+            }
+        }
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                root.value = root.minimum + clamp((self.mouse-x - 4px) / (root.width - 8px), 0, 1) * (root.maximum - root.minimum);
+                root.changed(root.value);
+            }
+            if (event.kind == PointerEventKind.up && event.button == PointerEventButton.left) {
+                root.released(root.value);
+            }
+        }
+    }
+}
+
+// What scrolls, with the original's bar: ten wide, a blue thumb six wide in it.
+export component Scroll inherits Rectangle {
+    in property <length> content-height;
+    in-out property <length> offset <=> flick.content-y;
+    out property <length> visible-width: self.width - 10px;
+    out property <bool> scrolls: root.content-height > root.height;
+    clip: true;
+    flick := Flickable {
+        x: 0;
+        width: root.width;
+        content-width: root.width;
+        content-height: max(root.content-height, root.height);
+        @children
+    }
+    if root.scrolls: Rectangle {
+        x: parent.width - 10px;
+        width: 10px;
+        property <length> thumb: max(24px, root.height * root.height / root.content-height);
+        property <length> room: root.height - self.thumb;
+        Rectangle {
+            x: 2px;
+            y: parent.room * (-flick.content-y / (root.content-height - root.height));
+            width: 6px;
+            height: parent.thumb;
+            background: bar.has-hover || bar.pressed ? Theme.primary-hover : Theme.primary;
+        }
+        bar := TouchArea {
+            property <length> grabbed;
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down) {
+                    self.grabbed = self.mouse-y - parent.room * (-flick.content-y / (root.content-height - root.height));
+                    // A press beside the thumb brings its middle there.
+                    if (self.grabbed < 0 || self.grabbed > parent.thumb) {
+                        self.grabbed = parent.thumb / 2;
+                    }
+                }
+            }
+            moved => {
+                if (self.pressed && parent.room > 0) {
+                    flick.content-y = -clamp((self.mouse-y - self.grabbed) / parent.room, 0, 1) * (root.content-height - root.height);
+                }
+            }
+        }
+    }
+}
+
+// A frame with its heading set into the line.
+export component GroupBox inherits Rectangle {
+    in property <string> title;
+    in property <Glyph> icon;
+    in property <length> font-size: Theme.size;
+    border-width: 1px;
+    border-color: Theme.field-border;
+    Rectangle {
+        x: 5px;
+        y: -10px;
+        width: head.preferred-width + 10px;
+        height: 20px;
+        background: Theme.bg;
+        head := HorizontalLayout {
+            x: 5px;
+            spacing: 4px;
+            if root.icon.w > 0: Rectangle {
+                width: mark.width;
+                mark := Icon {
+                    y: (parent.height - self.height) / 2;
+                    glyph: root.icon;
+                    size: root.font-size;
+                    tint: Theme.text;
+                }
+            }
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: root.font-size;
+                vertical-alignment: center;
+            }
+        }
+    }
+    @children
+}
+
+// A heading with a line running from it to the right edge.
+export component Ruled inherits HorizontalLayout {
+    in property <string> title;
+    spacing: 8px;
+    height: 20px;
+    Text {
+        text: root.title;
+        color: Theme.text;
+        font-size: Theme.size;
+        vertical-alignment: center;
+    }
+    Rectangle {
+        horizontal-stretch: 1;
+        Rectangle {
+            y: (parent.height - 1px) / 2 + 1px;
+            height: 1px;
+            background: Theme.primary;
+        }
+    }
+}
+
+// A link: blue, underlined under the pointer.
+export component Link inherits Text {
+    callback clicked;
+    color: ta.has-hover ? #0c59de : Theme.primary;
+    font-size: Theme.size;
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+// (?) with a hint that shows while the pointer is over it.
+export component Hint inherits Rectangle {
+    in property <string> text;
+    width: 12px;
+    height: 20px;
+    Text {
+        text: "?";
+        color: ta.has-hover ? Theme.primary-light : Theme.primary;
+        font-size: Theme.size;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    ta := TouchArea {
+        changed has-hover => {
+            if self.has-hover {
+                Tip.text = root.text;
+                Tip.x = root.absolute-position.x;
+                Tip.y = root.absolute-position.y + 22px;
+            } else if Tip.text == root.text {
+                Tip.text = "";
+            }
+        }
+    }
+}
+
+/// One line of a menu. A divider has nothing else; `sub` names the list of
+/// `submenus` that opens beside the line (-1: none).
+export struct MenuEntry {
+    label: string,
+    icon: Glyph,
+    enabled: bool,
+    checked: bool,
+    divider: bool,
+    sub: int,
+    /// What the line does, handed to `activated`.
+    id: string,
+}
+
+// The lines of a menu: grey, 26 tall, the icon in a box a letter and a quarter wide.
+component MenuLines inherits VerticalLayout {
+    in property <[MenuEntry]> entries;
+    in property <bool> icons;
+    callback activated(string);
+    callback opened(int, length);
+    padding-top: 5px;
+    padding-bottom: 5px;
+    for entry[i] in root.entries: Rectangle {
+        height: entry.divider ? 19px : 26px;
+        background: !entry.divider && line.has-hover && entry.enabled ? Theme.menu-hover : Theme.menu;
+        if entry.divider: Rectangle {
+            y: 9px;
+            height: 1px;
+            background: #e5e5e5;
+        }
+        if !entry.divider: HorizontalLayout {
+            padding-left: root.icons ? 15px : 20px;
+            padding-right: 20px;
+            spacing: 5px;
+            opacity: entry.enabled ? 1 : 0.5;
+            if root.icons: Rectangle {
+                width: 17.5px;
+                Icon {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    glyph: entry.checked ? Icons.check : entry.icon;
+                    size: 14px;
+                    tint: Theme.text;
+                }
+            }
+            Text {
+                horizontal-stretch: 1;
+                text: entry.label;
+                color: Theme.text;
+                font-size: Theme.size;
+                vertical-alignment: center;
+            }
+            if entry.sub >= 0: Rectangle {
+                width: 18px;
+                Icon {
+                    x: parent.width - self.width;
+                    y: (parent.height - self.height) / 2;
+                    glyph: Icons.chevron-right;
+                    size: 11.2px;
+                    tint: Theme.text;
+                }
+            }
+        }
+        line := TouchArea {
+            enabled: !entry.divider && entry.enabled;
+            changed has-hover => {
+                if self.has-hover {
+                    root.opened(entry.sub, parent.y);
+                }
+            }
+            clicked => {
+                if entry.sub < 0 {
+                    root.activated(entry.id);
+                }
+            }
+        }
+    }
+}
+
+// A menu over the window: drop-down, drop-up or at the pointer. It unfolds from
+// its edge in a tenth of a second, as the original's do; a line with a list of
+// its own opens it beside itself while the pointer is on it. Placed where it is
+// to open; it takes no room itself.
+export component Menu inherits Rectangle {
+    in property <[MenuEntry]> entries;
+    in property <[[MenuEntry]]> submenus;
+    in property <length> menu-width: 160px;
+    // Unfolds upwards from its place (a menu over the button that opened it).
+    in property <bool> up;
+    callback activated(string);
+    property <int> open-sub: -1;
+    property <length> sub-y;
+    property <float> unfold: 0;
+    width: 0;
+    height: 0;
+    public function show() {
+        root.unfold = 0;
+        popup.show();
+        root.unfold = 1;
+    }
+    public function close() {
+        popup.close();
+    }
+    popup := PopupWindow {
+        x: 0;
+        y: root.up ? -lines.preferred-height : 0;
+        width: root.menu-width;
+        height: lines.preferred-height;
+        close-policy: close-on-click-outside;
+        Rectangle {
+            y: root.up ? parent.height * (1 - root.unfold) : 0;
+            height: parent.height * root.unfold;
+            animate y, height { duration: 100ms; easing: ease-out; }
+            clip: true;
+            background: Theme.menu;
+            lines := MenuLines {
+                y: root.up ? parent.height - self.preferred-height : 0;
+                width: parent.width;
+                entries: root.entries;
+                icons: true;
+                activated(id) => {
+                    root.activated(id);
+                    side.close();
+                    popup.close();
+                }
+                opened(sub, at) => {
+                    root.open-sub = sub;
+                    root.sub-y = at;
+                    if sub >= 0 {
+                        side.show();
+                    } else {
+                        side.close();
+                    }
+                }
+            }
+        }
+        side := PopupWindow {
+            x: root.menu-width;
+            y: root.sub-y - 5px;
+            width: root.menu-width;
+            height: more.preferred-height;
+            close-policy: no-auto-close;
+            Rectangle {
+                background: Theme.menu;
+                more := MenuLines {
+                    width: parent.width;
+                    entries: root.open-sub >= 0 && root.open-sub < root.submenus.length ? root.submenus[root.open-sub] : [];
+                    icons: true;
+                    activated(id) => {
+                        root.activated(id);
+                        side.close();
+                        popup.close();
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A heading of the wallpaper's card: its text, a blue line to the right edge.
+export component Header inherits HorizontalLayout {
+    in property <string> title;
+    padding-top: 25px;
+    padding-bottom: 10px;
+    spacing: 5px;
+    height: 50px;
+    Text {
+        text: root.title;
+        color: Theme.text;
+        font-size: Theme.size;
+        vertical-alignment: center;
+    }
+    Rectangle {
+        horizontal-stretch: 1;
+        Rectangle {
+            y: (parent.height - 1px) / 2;
+            height: 1px;
+            background: Theme.primary;
+        }
+    }
+}

@@ -26,10 +26,17 @@ use crate::desktop::{self, Desktop, Settings};
 unsafe extern "C" {
     fn prctl(option: i32, ...) -> i32;
     fn signal(signum: i32, handler: extern "C" fn(i32)) -> usize;
+    fn kill(pid: i32, signal: i32) -> i32;
+    fn getuid() -> u32;
+    fn getsockopt(fd: i32, level: i32, name: i32, value: *mut std::ffi::c_void, length: *mut u32) -> i32;
 }
 const PR_SET_PDEATHSIG: i32 = 1;
 const SIGINT: i32 = 2;
+const SIGKILL: i32 = 9;
 const SIGTERM: i32 = 15;
+const SOL_SOCKET: i32 = 1;
+/// Linux's number on x86 and ARM, which is where the renderer runs.
+const SO_PEERCRED: i32 = 17;
 
 /// The daemon was asked to go (SIGTERM, SIGINT).
 static STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -84,22 +91,194 @@ pub fn socket() -> PathBuf {
     runtime_dir().join("wepaper.sock")
 }
 
-/// One request to the renderer and its answer: a line of JSON each way.
-/// The error is the renderer's own words, or that it is not there.
-pub fn call(request: Value) -> Result<Value, String> {
-    let stream = UnixStream::connect(socket()).map_err(|_| "the renderer is not running".to_owned())?;
-    // A renderer that stopped answering must not hang the window.
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
+/// A plugin of the renderer, as its folder describes it.
+pub struct Plugin {
+    pub name: String,
+    pub kind: String,
+    pub path: PathBuf,
+    pub enabled: bool,
+}
+
+/// The renderer's plugins: every folder with a `plugin.json` in the places the
+/// renderer looks, a later place winning over an earlier one.
+pub fn plugins() -> Vec<Plugin> {
+    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    let var = |name: &str, fallback: PathBuf| std::env::var_os(name).map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or(fallback);
+    let mut places: Vec<PathBuf> = Vec::new();
+    if let Some(prefix) = bin(ENGINE).as_deref().and_then(Path::parent).and_then(Path::parent) {
+        places.push(prefix.join("share/wepaper/plugins"));
+    }
+    places.extend(["/usr/share", "/usr/local/share"].map(|dir| PathBuf::from(dir).join("wepaper/plugins")));
+    places.push(var("XDG_DATA_HOME", home.join(".local/share")).join("wepaper/plugins"));
+    places.push(var("XDG_CONFIG_HOME", home.join(".config")).join("wepaper/plugins"));
+    let mut found: Vec<(String, Plugin)> = Vec::new();
+    for place in places {
+        for entry in std::fs::read_dir(place).into_iter().flatten().flatten() {
+            let path = entry.path();
+            let Some(manifest) = std::fs::read(path.join("plugin.json")).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) else { continue };
+            let folder = entry.file_name().to_string_lossy().into_owned();
+            let id = manifest["id"].as_str().map_or(folder.clone(), str::to_owned);
+            let plugin = Plugin {
+                name: manifest["name"].as_str().map_or(folder, str::to_owned),
+                kind: manifest["kind"].as_str().unwrap_or("").to_owned(),
+                path,
+                enabled: manifest["enabled"].as_bool().unwrap_or(true),
+            };
+            found.retain(|(known, _)| *known != id);
+            found.push((id, plugin));
+        }
+    }
+    found.into_iter().map(|(_, plugin)| plugin).collect()
+}
+
+/// How a request to the renderer went wrong.
+#[derive(Debug, PartialEq)]
+pub enum Failure {
+    /// Nothing listens on its socket.
+    Absent,
+    /// It took the request and gave no answer in time: it hangs.
+    Silent,
+    /// It said no (its own words), or went without a word.
+    Said(String),
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(match self {
+            Failure::Absent => "the renderer is not running",
+            Failure::Silent => "the renderer does not answer",
+            Failure::Said(words) => words,
+        })
+    }
+}
+
+/// How long the renderer may take over a request. It answers between two
+/// frames; only loading a wallpaper (`show`) and drawing one to a file
+/// (`snapshot`) are seconds of work.
+pub fn patience(request: &Value) -> Duration {
+    match request["cmd"].as_str() {
+        Some("show" | "snapshot") => Duration::from_secs(30),
+        _ => Duration::from_secs(5),
+    }
+}
+
+thread_local! {
+    /// Whether a request of this thread found the renderer hanging. The
+    /// daemon's loop looks at it: a renderer that does not answer it is killed.
+    static SILENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// One request to the renderer listening on `socket`, waiting for its answer
+/// no longer than `patience`.
+pub fn ask(socket: &Path, request: &Value, patience: Duration) -> Result<Value, Failure> {
+    let stream = UnixStream::connect(socket).map_err(|_| Failure::Absent)?;
+    let _ = stream.set_read_timeout(Some(patience));
+    let _ = stream.set_write_timeout(Some(patience));
+    let timed_out = |e: &std::io::Error| matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut);
+    let silent = || {
+        SILENT.set(true);
+        Failure::Silent
+    };
     let mut line = request.to_string();
     line.push('\n');
-    (&stream).write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+    if let Err(e) = (&stream).write_all(line.as_bytes()) {
+        return Err(if timed_out(&e) { silent() } else { Failure::Said(e.to_string()) });
+    }
     let mut answer = String::new();
-    BufReader::new(&stream).read_line(&mut answer).map_err(|e| e.to_string())?;
-    let answer: Value = serde_json::from_str(&answer).map_err(|_| "the renderer gave no answer".to_owned())?;
+    if let Err(e) = BufReader::new(&stream).read_line(&mut answer) {
+        return Err(if timed_out(&e) { silent() } else { Failure::Said(e.to_string()) });
+    }
+    let answer: Value = serde_json::from_str(&answer).map_err(|_| Failure::Said("the renderer gave no answer".to_owned()))?;
     if answer["ok"].as_bool() == Some(true) {
         Ok(answer["value"].clone())
     } else {
-        Err(answer["error"].as_str().unwrap_or("the renderer refused").to_owned())
+        Err(Failure::Said(answer["error"].as_str().unwrap_or("the renderer refused").to_owned()))
+    }
+}
+
+/// One request to the renderer and its answer: a line of JSON each way.
+/// The error is the renderer's own words, or that it is not there or hangs.
+pub fn call(request: Value) -> Result<Value, String> {
+    ask(&socket(), &request, patience(&request)).map_err(|failure| failure.to_string())
+}
+
+/// The process listening on a socket, from the kernel (`SO_PEERCRED`): the
+/// renderer, whoever started it. None when nothing listens, or when what
+/// listens is not the user's own.
+pub fn listener(socket: &Path) -> Option<i32> {
+    use std::os::fd::AsRawFd;
+    #[repr(C)]
+    struct Credentials {
+        pid: i32,
+        uid: u32,
+        gid: u32,
+    }
+    let stream = UnixStream::connect(socket).ok()?;
+    let mut credentials = Credentials { pid: 0, uid: 0, gid: 0 };
+    let mut length = std::mem::size_of::<Credentials>() as u32;
+    let got = unsafe { getsockopt(stream.as_raw_fd(), SOL_SOCKET, SO_PEERCRED, (&raw mut credentials).cast(), &raw mut length) };
+    (got == 0 && credentials.pid > 0 && credentials.uid == unsafe { getuid() }).then_some(credentials.pid)
+}
+
+/// Whether anything still listens on a socket.
+fn listening(socket: &Path) -> bool {
+    UnixStream::connect(socket).is_ok()
+}
+
+/// Waits up to `limit` for nothing to listen on `socket`; whether that came.
+fn gone_within(socket: &Path, limit: Duration) -> bool {
+    let since = Instant::now();
+    loop {
+        if !listening(socket) {
+            return true;
+        }
+        if since.elapsed() >= limit {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// SIGTERM, then SIGKILL, `step` apart, to what listens on `socket`.
+/// Whether nothing listens after.
+fn signal_out(socket: &Path, step: Duration) -> bool {
+    for signal in [SIGTERM, SIGKILL] {
+        let Some(pid) = listener(socket) else { return !listening(socket) };
+        unsafe {
+            kill(pid, signal);
+        }
+        if gone_within(socket, step) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Stop the renderer listening on `socket`, whoever started it and whatever
+/// it is doing: asked to quit, then SIGTERM, then SIGKILL, `step` apart. A
+/// renderer that hangs answers nothing and an old one does not even go on
+/// SIGTERM, and two renderers must never draw and play at once. Whether it
+/// is gone.
+pub fn put_down(socket: &Path, step: Duration) -> bool {
+    if !listening(socket) {
+        return true;
+    }
+    let _ = ask(socket, &json!({ "cmd": "quit" }), step);
+    gone_within(socket, step) || signal_out(socket, step)
+}
+
+/// The wallpaper was taken off: the renderer is to go within about three
+/// seconds, whatever the daemon and the renderer are doing. When all is well
+/// the daemon stops it in a moment; when it does not, it is stopped here.
+pub fn see_off() {
+    let socket = socket();
+    if gone_within(&socket, Duration::from_millis(1200)) {
+        return;
+    }
+    // Set again meanwhile: the daemon is to show that, not to lose it.
+    let desktop = Desktop::load();
+    if desktop.wallpaper.is_none() && desktop.outputs.is_empty() {
+        signal_out(&socket, Duration::from_millis(700));
     }
 }
 
@@ -140,6 +319,12 @@ pub fn tell_property(wallpaper: &Path, name: &str, value: &Value) {
     // Off the interface's thread: a socket is quick, but never instant.
     std::thread::spawn(move || {
         for (output, _) in shown().into_iter().filter(|(_, path)| *path == wallpaper) {
+            // The alignment of a video is how the renderer fills the monitor.
+            if name == "alignment" {
+                let fill = crate::props::fill_of(&value).map_or(Value::Null, Value::from);
+                let _ = call(json!({ "cmd": "set", "path": format!("outputs/{output}/fill"), "value": fill }));
+                continue;
+            }
             let path = format!("outputs/{output}/wallpaper/properties/{name}");
             let _ = call(json!({ "cmd": "set", "path": path, "value": value }));
         }
@@ -169,16 +354,29 @@ fn hypr_json(what: &str) -> Option<serde_json::Value> {
     serde_json::from_slice(&out.stdout).ok()
 }
 
-/// Hyprland's monitors, each with whether it shows a fullscreen window
-/// (not just a maximized one): its desktop is not there to look at.
-fn covered_monitors() -> Vec<(String, bool)> {
+/// What is over a monitor's desktop, on Hyprland.
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+struct Over {
+    /// A window has the focus there.
+    focused: bool,
+    /// 0 nothing, 1 a window maximised over it, 2 a fullscreen window.
+    covered: u8,
+    /// The monitor sleeps (its power is off).
+    asleep: bool,
+}
+
+/// Hyprland's monitors, each with what is over its desktop.
+fn covered_monitors() -> Vec<(String, Over)> {
     let (Some(monitors), Some(clients)) = (hypr_json("monitors"), hypr_json("clients")) else { return Vec::new() };
-    let fullscreen: Vec<i64> = clients
+    let active = hypr_json("activewindow").and_then(|w| w["monitor"].as_i64());
+    let covering: Vec<(i64, u8)> = clients
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|c| c["fullscreen"].as_i64().unwrap_or(0) >= 2)
-        .filter_map(|c| c["workspace"]["id"].as_i64())
+        .filter_map(|c| {
+            let how = c["fullscreen"].as_i64().unwrap_or(0).clamp(0, 2) as u8;
+            (how > 0).then_some((c["workspace"]["id"].as_i64()?, how))
+        })
         .collect();
     monitors
         .as_array()
@@ -188,10 +386,69 @@ fn covered_monitors() -> Vec<(String, bool)> {
             let covered = [m["activeWorkspace"]["id"].as_i64(), m["specialWorkspace"]["id"].as_i64()]
                 .into_iter()
                 .flatten()
-                .any(|id| id != 0 && fullscreen.contains(&id));
-            (m["name"].as_str().unwrap_or("").to_owned(), covered)
+                .filter(|id| *id != 0)
+                .flat_map(|id| covering.iter().filter(move |(workspace, _)| *workspace == id).map(|(_, how)| *how))
+                .max()
+                .unwrap_or(0);
+            let over = Over {
+                focused: active.is_some() && active == m["id"].as_i64(),
+                covered,
+                asleep: m["dpmsStatus"].as_bool() == Some(false),
+            };
+            (m["name"].as_str().unwrap_or("").to_owned(), over)
         })
         .collect()
+}
+
+/// What the original's "Воспроизведение" asks of a wallpaper, weakest first.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Playback {
+    Run,
+    Mute,
+    Pause,
+    PauseAll,
+    Stop,
+}
+
+impl Playback {
+    fn from_name(name: &str) -> Self {
+        match name {
+            "mute" => Playback::Mute,
+            "pause" => Playback::Pause,
+            "pauseall" => Playback::PauseAll,
+            "stop" => Playback::Stop,
+            _ => Playback::Run,
+        }
+    }
+}
+
+/// What a monitor's wallpaper is to do with this over it, and while another
+/// application plays sound (`sound`): the strongest of what applies.
+fn under(settings: &Settings, over: Over, sound: bool) -> Playback {
+    let mut wanted = Playback::Run;
+    let mut take = |applies: bool, choice: &str| {
+        if applies {
+            wanted = wanted.max(Playback::from_name(choice));
+        }
+    };
+    take(over.covered == 2, &settings.playback_fullscreen);
+    take(over.covered == 1, &settings.playback_maximized);
+    take(over.focused && over.covered == 0, &settings.playback_focus);
+    take(over.asleep, &settings.playback_sleep);
+    take(sound, &settings.playback_audio);
+    wanted
+}
+
+/// Whether an application other than the renderer (`renderer`, its pid)
+/// plays sound now: a stream of the sound server that is not paused.
+fn others_play_sound(renderer: i32) -> bool {
+    let Some(text) = output("pactl", &["list", "sink-inputs"]) else { return false };
+    text.split("Sink Input #").skip(1).any(|stream| {
+        let playing = stream.lines().any(|l| l.trim() == "Corked: no");
+        let pid = stream.lines().find_map(|l| l.trim().strip_prefix("application.process.id = ")).map(|v| v.trim_matches('"').to_owned());
+        let ours = pid.is_some_and(|p| p == renderer.to_string()) || stream.contains("application.process.binary = \"wepaper\"");
+        playing && !ours
+    })
 }
 
 /// The size of the largest monitor (Hyprland's, else the renderer's), else
@@ -372,21 +629,37 @@ pub fn restore_images() {
     }
 }
 
+/// Where the output of the user's hook goes: the hook of the last change.
+pub fn hook_log() -> PathBuf {
+    runtime_dir().join("hook.log")
+}
+
 /// The user's hook: a shell command told what is on the desktop now.
 fn hook(settings: &Settings, wallpaper: &Path, still: Option<&Path>) {
     if settings.hook.trim().is_empty() {
         return;
     }
     let title = project(wallpaper)["title"].as_str().unwrap_or("").to_owned();
-    let _ = Command::new("sh")
+    let _ = std::fs::create_dir_all(runtime_dir());
+    let _ = run_hook(&settings.hook, wallpaper, still, &title, &hook_log());
+}
+
+/// Run a hook with its output in `log`, started anew: what it says is not for
+/// the terminal the daemon was started from, where it would land at every
+/// change of the wallpaper.
+fn run_hook(command: &str, wallpaper: &Path, still: Option<&Path>, title: &str, log: &Path) -> std::io::Result<std::process::ExitStatus> {
+    let out = std::fs::File::create(log)?;
+    Command::new("sh")
         .arg("-c")
-        .arg(&settings.hook)
+        .arg(command)
         .env("WE_LINUX_WALLPAPER", wallpaper)
         .env("WE_LINUX_STILL", still.unwrap_or(Path::new("")))
         .env("WE_LINUX_TITLE", title)
         .stdin(Stdio::null())
+        .stdout(out.try_clone()?)
+        .stderr(out)
         // Waited for (this runs on a thread of its own): no leftover process.
-        .status();
+        .status()
 }
 
 /// A wallpaper is on the desktop: the still under it, then the hook.
@@ -463,13 +736,15 @@ fn properties(wallpaper: &Path) -> Value {
     Value::Object(id.map(crate::props::overrides).unwrap_or_default().into_iter().collect())
 }
 
-/// The settings the renderer is told: a change of them is sent, nothing restarts.
-fn told(settings: &Settings) -> [(&'static str, Value); 4] {
+/// The settings the renderer is told: a change of them is sent, nothing
+/// restarts. `muted`: "Воспроизведение" asks for silence now.
+fn told(settings: &Settings, muted: bool) -> [(&'static str, Value); 5] {
     [
         ("fps", json!(settings.fps.clamp(10, 240))),
-        ("mute", json!(!settings.audio)),
+        ("mute", json!(!settings.audio || muted)),
         ("volume", json!(settings.volume.clamp(0, 100))),
         ("video_hardware", json!(settings.video_gpu)),
+        ("texture_max_side", json!(if settings.texture_half { 2048 } else { 0 })),
     ]
 }
 
@@ -489,7 +764,7 @@ fn spawn(settings: &Settings) -> Result<Child, String> {
     command.arg("-v").arg("daemon").arg("--socket").arg(socket()).arg("--state").arg(state).arg("--assets").arg(assets);
     // Its own config file is not ours to read: the settings are told.
     command.arg("--config").arg(dir.join("engine-config.json"));
-    for (key, value) in told(settings) {
+    for (key, value) in told(settings, false) {
         command.arg("--set").arg(format!("{key}={value}"));
     }
     command.stdin(Stdio::null()).stdout(log.try_clone().map_err(|e| e.to_string())?).stderr(log);
@@ -503,8 +778,10 @@ fn spawn(settings: &Settings) -> Result<Child, String> {
     command.spawn().map_err(|e| e.to_string())
 }
 
+/// Stop our renderer: asked to quit (no longer than a moment: one that hangs
+/// does not answer), then killed if it is still there.
 fn stop(child: &mut Child) {
-    let _ = call(json!({ "cmd": "quit" }));
+    let _ = ask(&socket(), &json!({ "cmd": "quit" }), Duration::from_secs(1));
     for _ in 0..30 {
         if matches!(child.try_wait(), Ok(Some(_))) {
             return;
@@ -513,6 +790,37 @@ fn stop(child: &mut Child) {
     }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// The pid of the renderer the daemon runs, 0 while none: what the watch of
+/// [`watch_stop`] kills when the daemon's loop cannot.
+static RENDERER: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// How long the daemon told to go may take over it before its renderer is
+/// killed from outside the loop, and how long after that it exits anyway.
+const GRACE: Duration = Duration::from_secs(2);
+
+/// The daemon's loop sees that it was told to go between two requests to the
+/// renderer, and a request may take long. This thread wakes it at once, kills
+/// the renderer when the loop is not done after [`GRACE`] (the request it
+/// waits on fails then), and leaves for it after another.
+fn watch_stop(wake: Sender<()>) {
+    std::thread::spawn(move || {
+        while !STOP.load(std::sync::atomic::Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let _ = wake.send(());
+        std::thread::sleep(GRACE);
+        let pid = RENDERER.load(std::sync::atomic::Ordering::Relaxed);
+        if pid > 0 {
+            unsafe {
+                kill(pid, SIGKILL);
+            }
+        }
+        std::thread::sleep(GRACE);
+        restore_images();
+        std::process::exit(0);
+    });
 }
 
 /// Waits for a renderer just started to answer and to have found the
@@ -562,7 +870,7 @@ fn watch_hyprland(wake: Sender<()>) {
         loop {
             if let Ok(stream) = UnixStream::connect(&socket) {
                 for line in BufReader::new(stream).lines().map_while(Result::ok) {
-                    let relevant = ["fullscreen", "workspace", "focusedmon", "activespecial", "openwindow", "closewindow", "movewindow", "monitoradded", "monitorremoved"];
+                    let relevant = ["fullscreen", "workspace", "focusedmon", "activespecial", "activewindow", "openwindow", "closewindow", "movewindow", "monitoradded", "monitorremoved"];
                     if relevant.iter().any(|e| line.starts_with(e)) && wake.send(()).is_err() {
                         return;
                     }
@@ -608,6 +916,7 @@ pub fn run_daemon() {
         while woken.try_recv().is_ok() {}
     };
     watch_hyprland(wake.clone());
+    watch_stop(wake.clone());
     watch_files(wake);
     std::thread::spawn(desktop::run_playlist);
     hypr_layer_rule();
@@ -619,12 +928,19 @@ pub fn run_daemon() {
     let mut broken: HashMap<(String, PathBuf), String> = HashMap::new();
     // Why the renderer itself does not run, when it does not.
     let mut down: Option<String> = None;
+    // That a renderer hung and was killed, until the user sets something.
+    let mut hung: Option<String> = None;
     let mut short_lives = 0;
     let mut desktop_stamp = None;
     // What the errors file holds (None: not known, it is written anew). The
     // file is written when this changes only: its time says how new it is.
     let mut reported: Option<String> = None;
-    // What an earlier daemon left.
+    // What an earlier daemon left: a renderer that outlived it (one that hung
+    // does not go with it) is stopped before its socket goes, else it would
+    // draw and play next to ours.
+    if !put_down(&socket(), Duration::from_secs(1)) {
+        eprintln!("we-linux: the renderer an earlier daemon left does not stop");
+    }
     let _ = std::fs::remove_file(socket());
     let _ = std::fs::remove_file(runtime_dir().join("engine.log"));
     // The settings the running renderer has.
@@ -641,6 +957,7 @@ pub fn run_daemon() {
             if let Some((mut child, _)) = renderer.take() {
                 stop(&mut child);
             }
+            RENDERER.store(0, std::sync::atomic::Ordering::Relaxed);
             restore_images();
             std::process::exit(0);
         }
@@ -664,11 +981,17 @@ pub fn run_daemon() {
             broken.clear();
             short_lives = 0;
             down = None;
+            hung = None;
             reported = None;
         }
         let covered = if hyprland() { covered_monitors() } else { Vec::new() };
-        // Every monitor is fullscreen and the user wants the memory back.
-        let hidden = settings.stop_fullscreen && !covered.is_empty() && covered.iter().all(|(_, c)| *c);
+        let sound = settings.playback_audio != "run" && others_play_sound(RENDERER.load(std::sync::atomic::Ordering::Relaxed));
+        let playbacks: Vec<(String, Playback)> = covered.iter().map(|(name, over)| (name.clone(), under(&settings, *over, sound))).collect();
+        // Every monitor is to stop: the renderer goes, and its memory with it.
+        let hidden = !playbacks.is_empty() && playbacks.iter().all(|(_, playback)| *playback == Playback::Stop);
+        // One monitor pausing all of them, one muting all of them.
+        let pause_all = playbacks.iter().any(|(_, playback)| *playback == Playback::PauseAll);
+        let muted = playbacks.iter().any(|(_, playback)| *playback == Playback::Mute) || (sound && Playback::from_name(&settings.playback_audio) == Playback::Mute);
 
         // A renderer that went on its own is started again (the compositor
         // may have come back), but not one that goes every time.
@@ -683,21 +1006,24 @@ pub fn run_daemon() {
                 restore_images();
             }
             renderer = None;
+            RENDERER.store(0, std::sync::atomic::Ordering::Relaxed);
         }
         if !live || hidden {
             if let Some((mut child, _)) = renderer.take() {
                 stop(&mut child);
+                RENDERER.store(0, std::sync::atomic::Ordering::Relaxed);
                 let _ = std::fs::remove_file(runtime_dir().join("engine.log"));
             }
         } else if renderer.is_none() && short_lives < SHORT_LIVES {
             match spawn(&settings) {
                 Ok(mut child) => {
+                    RENDERER.store(child.id() as i32, std::sync::atomic::Ordering::Relaxed);
                     await_renderer(&mut child);
                     renderer = Some((child, Instant::now()));
                     down = None;
                     // A new renderer plays on every monitor, with these settings.
                     frozen.clear();
-                    settings_told = Some(format!("{:?}", told(&settings)));
+                    settings_told = Some(format!("{:?}", told(&settings, false)));
                 }
                 Err(e) => {
                     if down.as_ref() != Some(&e) {
@@ -708,11 +1034,14 @@ pub fn run_daemon() {
             }
         }
 
+        SILENT.set(false);
+        // A monitor that was being given its wallpaper when the renderer hung.
+        let mut loading: Option<(String, PathBuf)> = None;
         if renderer.is_some() && running() {
             // Settings that changed are told; nothing restarts.
-            let now = format!("{:?}", told(&settings));
+            let now = format!("{:?}", told(&settings, muted));
             if settings_told.as_ref() != Some(&now) {
-                let all = told(&settings).into_iter().all(|(key, value)| call(json!({ "cmd": "set", "path": format!("config/{key}"), "value": value })).is_ok());
+                let all = told(&settings, muted).into_iter().all(|(key, value)| call(json!({ "cmd": "set", "path": format!("config/{key}"), "value": value })).is_ok());
                 if all {
                     settings_told = Some(now);
                 }
@@ -720,6 +1049,10 @@ pub fn run_daemon() {
             // Each monitor gets what it is to show, when it shows something else.
             let showing: HashMap<String, PathBuf> = shown().into_iter().collect();
             for (monitor, _, _) in outputs() {
+                // A renderer that hangs answers nothing more this round.
+                if SILENT.get() {
+                    break;
+                }
                 let want = wanted(&desktop, &monitor);
                 if want.as_ref() == showing.get(&monitor) {
                     continue;
@@ -734,7 +1067,11 @@ pub fn run_daemon() {
                         match call(request) {
                             Ok(_) => {
                                 frozen.remove(&monitor);
+                                // A video's alignment, as the user set it (else the setting).
+                                let fill = properties(&wallpaper).get("alignment").and_then(crate::props::fill_of).map_or(Value::Null, Value::from);
+                                let _ = call(json!({ "cmd": "set", "path": format!("outputs/{monitor}/fill"), "value": fill }));
                             }
+                            Err(_) if SILENT.get() => loading = Some(key),
                             Err(why) => {
                                 eprintln!("we-linux: {}: {why}", wallpaper.display());
                                 broken.insert(key, why);
@@ -753,8 +1090,11 @@ pub fn run_daemon() {
             }
             // A monitor under a fullscreen window keeps its frame: the scene
             // stops there (no work for nothing) and goes on from that frame after.
-            for (monitor, covered) in &covered {
-                let freeze = settings.pause_fullscreen && *covered;
+            for (monitor, playback) in &playbacks {
+                if SILENT.get() {
+                    break;
+                }
+                let freeze = pause_all || *playback >= Playback::Pause;
                 if frozen.get(monitor).copied().unwrap_or(false) == freeze {
                     continue;
                 }
@@ -766,10 +1106,36 @@ pub fn run_daemon() {
             }
         }
 
+        // A renderer that does not answer in time hangs: it is killed (it would
+        // hold the daemon up at every request and may play on) and counts as
+        // one that did not get to work. One that hung loading a wallpaper is
+        // not given that wallpaper again.
+        if SILENT.get()
+            && let Some((mut child, _)) = renderer.take()
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            RENDERER.store(0, std::sync::atomic::Ordering::Relaxed);
+            let _ = std::fs::remove_file(socket());
+            short_lives += 1;
+            let why = "the renderer stopped answering and was killed: see `we-linux doctor`".to_owned();
+            eprintln!("we-linux: {why}");
+            match loading {
+                Some(key) => {
+                    broken.insert(key, "the renderer hung loading it and was killed".to_owned());
+                }
+                None => hung = Some(why),
+            }
+            if short_lives >= SHORT_LIVES {
+                down = Some("the renderer keeps hanging: see `we-linux doctor`".to_owned());
+                restore_images();
+            }
+        }
+
         // Every failure with its wallpaper: who asks about another wallpaper
         // (another monitor's) is not told this one's.
         let mut errors: Vec<String> = broken.iter().map(|((_, wallpaper), why)| format!("{}\t{why}", wallpaper.display())).collect();
-        if let Some(why) = &down {
+        if let Some(why) = down.as_ref().or(hung.as_ref()) {
             let wallpapers = desktop.wallpaper.iter().chain(desktop.outputs.values());
             errors.extend(wallpapers.map(|wallpaper| format!("{}\t{why}", wallpaper.display())));
         }
@@ -878,6 +1244,9 @@ pub fn doctor() -> String {
     for (wallpaper, why) in errors() {
         out.push(format!("last error: {why} ({})", wallpaper.display()));
     }
+    if !Settings::load().hook.trim().is_empty() {
+        out.push(format!("hook output: {}", hook_log().display()));
+    }
     out.push(format!("settings: {}", std::fs::read_to_string(desktop::settings_file()).map_or_else(|_| "(defaults)".to_owned(), |s| s.split_whitespace().collect::<Vec<_>>().join(" "))));
     if let Ok(log) = std::fs::read_to_string(runtime_dir().join("engine.log")) {
         out.push(String::new());
@@ -904,4 +1273,147 @@ fn strip_colours(line: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::net::UnixListener;
+
+    /// A folder of its own for one test (short: a socket's path is at most 108 bytes).
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("we-linux-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Set by the test that runs this binary as a renderer that hangs: the
+    /// socket it listens on without ever answering.
+    const HANG_ON: &str = "WE_LINUX_TEST_HANG_ON";
+    /// And whether it shrugs off SIGTERM, as an old renderer stuck in a call does.
+    const DEAF: &str = "WE_LINUX_TEST_DEAF";
+
+    /// Not a test: the renderer that hangs, run by the tests below.
+    #[test]
+    #[ignore]
+    fn hanging_renderer() {
+        let Some(socket) = std::env::var_os(HANG_ON) else { return };
+        if std::env::var_os(DEAF).is_some() {
+            extern "C" fn ignore(_: i32) {}
+            unsafe {
+                signal(SIGTERM, ignore);
+            }
+        }
+        let listener = UnixListener::bind(socket).unwrap();
+        let mut held = Vec::new();
+        for stream in listener.incoming().flatten() {
+            held.push(stream);
+        }
+    }
+
+    fn start_hanging(socket: &Path, deaf: bool) -> Child {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args(["--exact", "engine::tests::hanging_renderer", "--ignored", "--nocapture"]).env(HANG_ON, socket);
+        if deaf {
+            command.env(DEAF, "1");
+        }
+        let child = command.stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        let since = Instant::now();
+        while !listening(socket) {
+            assert!(since.elapsed() < Duration::from_secs(10), "the hanging renderer did not start");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        child
+    }
+
+    #[test]
+    fn questions_wait_seconds_and_loading_waits_longer() {
+        assert_eq!(patience(&json!({ "cmd": "version" })), Duration::from_secs(5));
+        assert_eq!(patience(&json!({ "cmd": "set", "path": "config/fps", "value": 60 })), Duration::from_secs(5));
+        assert_eq!(patience(&json!({ "cmd": "quit" })), Duration::from_secs(5));
+        assert_eq!(patience(&json!({ "cmd": "show", "wallpaper": "/w" })), Duration::from_secs(30));
+        assert_eq!(patience(&json!({ "cmd": "snapshot" })), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn nothing_listening_is_absent_at_once() {
+        let socket = scratch("absent").join("none.sock");
+        let since = Instant::now();
+        assert_eq!(ask(&socket, &json!({ "cmd": "version" }), Duration::from_secs(5)), Err(Failure::Absent));
+        assert!(since.elapsed() < Duration::from_secs(1));
+        assert!(!SILENT.get());
+    }
+
+    #[test]
+    fn a_renderer_that_does_not_answer_is_silent_in_time() {
+        let socket = scratch("silent").join("wepaper.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let held = std::thread::spawn(move || listener.accept().map(|(stream, _)| stream));
+        let since = Instant::now();
+        assert_eq!(ask(&socket, &json!({ "cmd": "version" }), Duration::from_millis(300)), Err(Failure::Silent));
+        assert!(since.elapsed() < Duration::from_secs(2));
+        assert!(SILENT.get(), "the daemon's loop is told the renderer hangs");
+        drop(held.join());
+    }
+
+    #[test]
+    fn an_answer_and_a_refusal() {
+        let socket = scratch("answer").join("wepaper.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            for answer in [r#"{"ok":true,"value":{"version":"1"}}"#, r#"{"ok":false,"error":"no such output"}"#, ""] {
+                let (stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+                (&stream).write_all(format!("{answer}\n").as_bytes()).unwrap();
+            }
+        });
+        let patience = Duration::from_secs(5);
+        assert_eq!(ask(&socket, &json!({ "cmd": "version" }), patience), Ok(json!({ "version": "1" })));
+        assert_eq!(ask(&socket, &json!({ "cmd": "hide" }), patience), Err(Failure::Said("no such output".to_owned())));
+        assert_eq!(ask(&socket, &json!({ "cmd": "hide" }), patience), Err(Failure::Said("the renderer gave no answer".to_owned())));
+        server.join().unwrap();
+        assert!(!SILENT.get());
+    }
+
+    #[test]
+    fn the_listener_is_known_by_its_socket() {
+        let socket = scratch("listener").join("wepaper.sock");
+        assert_eq!(listener(&socket), None);
+        let _bound = UnixListener::bind(&socket).unwrap();
+        assert_eq!(listener(&socket), Some(std::process::id() as i32));
+    }
+
+    #[test]
+    fn a_hanging_renderer_is_put_down() {
+        let socket = scratch("put-down").join("wepaper.sock");
+        let mut child = start_hanging(&socket, false);
+        let since = Instant::now();
+        assert!(put_down(&socket, Duration::from_millis(500)));
+        assert!(since.elapsed() < Duration::from_secs(3));
+        assert!(!listening(&socket));
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn a_renderer_deaf_to_sigterm_is_killed() {
+        let socket = scratch("deaf").join("wepaper.sock");
+        let mut child = start_hanging(&socket, true);
+        let since = Instant::now();
+        assert!(put_down(&socket, Duration::from_millis(500)));
+        assert!(since.elapsed() < Duration::from_secs(3));
+        let status = child.wait().unwrap();
+        assert_eq!(std::os::unix::process::ExitStatusExt::signal(&status), Some(SIGKILL));
+    }
+
+    #[test]
+    fn the_hook_says_its_piece_to_its_log() {
+        let dir = scratch("hook");
+        let log = dir.join("hook.log");
+        std::fs::write(&log, "what the hook of before said\n").unwrap();
+        let status = run_hook(r#"echo "$WE_LINUX_TITLE"; echo oops >&2"#, &dir, None, "Rain", &log).unwrap();
+        assert!(status.success());
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "Rain\noops\n");
+    }
 }

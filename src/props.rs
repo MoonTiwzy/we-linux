@@ -29,17 +29,23 @@ pub struct Property {
     pub options: Vec<(String, Value)>,
     /// "other.value == something": shown only while it holds.
     pub condition: String,
+    /// Whether the renderer can do what it asks; a row it cannot do is shown
+    /// greyed, with `hint` saying so.
+    pub usable: bool,
+    pub hint: String,
+    /// Combo choices the renderer can do (empty: all).
+    pub usable_options: Vec<bool>,
 }
 
 /// Labels Wallpaper Engine translates itself.
 fn known(label: &str) -> Option<&'static str> {
     use crate::lang::t;
     Some(match label {
-        "ui_browse_properties_scheme_color" => t("Scheme color", "Цвет схемы"),
+        "ui_browse_properties_scheme_color" => t("Scheme color", "Цветовая схема"),
         "ui_browse_properties_volume" => t("Volume", "Громкость"),
         "ui_browse_properties_playback_rate" => t("Playback rate", "Скорость воспроизведения"),
         "ui_browse_properties_alignment" => t("Alignment", "Выравнивание"),
-        "ui_browse_properties_position" => t("Position", "Положение"),
+        "ui_browse_properties_alignment_position" => t("Position", "Позиция"),
         _ => return None,
     })
 }
@@ -62,14 +68,72 @@ fn clean(label: &str) -> String {
     out.replace("&nbsp;", " ").replace("&amp;", "&").trim().to_owned()
 }
 
+/// The properties Wallpaper Engine gives every video wallpaper of its own,
+/// before the wallpaper's: how it sits on the monitor, how fast and loud it
+/// plays, its colours. Of these the renderer does the fill (cover or stretch).
+fn video_properties() -> Vec<Property> {
+    use crate::lang::t;
+    let row = |name: &str, label: &str, kind: Kind, default: Value, min: f64, max: f64| Property {
+        name: name.to_owned(),
+        label: label.to_owned(),
+        kind,
+        default,
+        min,
+        max,
+        options: Vec::new(),
+        condition: String::new(),
+        usable: false,
+        hint: t("The renderer does not do this yet.", "Рендерер пока этого не умеет.").to_owned(),
+        usable_options: Vec::new(),
+    };
+    let alignment = Property {
+        options: [
+            t("Fill", "Заполнение"),
+            t("Center", "Центр"),
+            t("Cover", "Заполнить"),
+            t("Stretch", "Растянуть"),
+            t("Free", "Свободный"),
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, label)| ((*label).to_owned(), Value::from(i)))
+        .collect(),
+        usable: true,
+        hint: String::new(),
+        usable_options: vec![true, false, true, true, false],
+        ..row("alignment", t("Alignment", "Выравнивание"), Kind::Combo, Value::from(0), 0.0, 4.0)
+    };
+    vec![
+        alignment,
+        row("alignmentposition", t("Position", "Позиция"), Kind::Slider, Value::from(50), 0.0, 100.0),
+        row("alignmentfliph", t("Flip", "Отразить"), Kind::Bool, Value::Bool(false), 0.0, 1.0),
+        row("rate", t("Playback rate", "Скорость воспроизведения"), Kind::Slider, Value::from(100), 25.0, 200.0),
+        row("volume", t("Volume", "Громкость"), Kind::Slider, Value::from(50), 0.0, 100.0),
+        row("showcoloroptions", t("Show color options", "Показать настройки цвета"), Kind::Bool, Value::Bool(false), 0.0, 1.0),
+    ]
+}
+
+/// What the renderer makes of a wallpaper's "alignment" (the original's
+/// choices: fill, center, cover, stretch, free): its fill of the monitor.
+pub fn fill_of(alignment: &Value) -> Option<&'static str> {
+    match alignment.as_f64().map(|n| n as i64) {
+        Some(0 | 2) => Some("cover"),
+        Some(3) => Some("stretch"),
+        _ => None,
+    }
+}
+
 pub fn load(dir: &Path) -> Vec<Property> {
     let Ok(bytes) = std::fs::read(dir.join("project.json")) else { return Vec::new() };
     let Ok(json) = serde_json::from_slice::<Value>(&bytes) else { return Vec::new() };
+    let builtin = if json["type"].as_str().is_some_and(|t| t.eq_ignore_ascii_case("video")) { video_properties() } else { Vec::new() };
     let Some(map) = json.pointer("/general/properties").and_then(Value::as_object) else {
-        return Vec::new();
+        return builtin;
     };
     let mut list: Vec<(i64, Property)> = map
         .iter()
+        // The scheme colour is the editor's: the browser leaves it out.
+        .filter(|(name, _)| *name != "schemecolor")
         .filter_map(|(name, p)| {
             let kind = match p.get("type").and_then(Value::as_str).unwrap_or("text") {
                 "bool" => Kind::Bool,
@@ -110,12 +174,15 @@ pub fn load(dir: &Path) -> Vec<Property> {
                         })
                         .unwrap_or_default(),
                     condition: p.get("condition").and_then(Value::as_str).unwrap_or("").to_owned(),
+                    usable: true,
+                    hint: String::new(),
+                    usable_options: Vec::new(),
                 },
             ))
         })
         .collect();
     list.sort_by_key(|(order, _)| *order);
-    list.into_iter().map(|(_, p)| p).collect()
+    builtin.into_iter().chain(list.into_iter().map(|(_, p)| p)).collect()
 }
 
 fn loose(v: &Value) -> String {
@@ -181,6 +248,42 @@ pub fn save_overrides(id: u64, values: &BTreeMap<String, Value>) {
     if let Ok(json) = serde_json::to_vec_pretty(values) {
         let _ = std::fs::write(path, json);
     }
+}
+
+fn presets_dir(id: u64) -> PathBuf {
+    overrides_file(id).with_file_name(format!("../presets/{id}"))
+}
+
+/// A name a preset can have as a file: no folders in it.
+fn preset_file(id: u64, name: &str) -> Option<PathBuf> {
+    let name: String = name.trim().chars().map(|c| if c == '/' || c == '\0' { '_' } else { c }).collect();
+    (!name.is_empty() && name != "." && name != "..").then(|| presets_dir(id).join(format!("{name}.json")))
+}
+
+/// The names of the presets saved for item `id`, in order.
+pub fn presets(id: u64) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(presets_dir(id))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| Some(entry.file_name().to_str()?.strip_suffix(".json")?.to_owned()))
+        .collect();
+    names.sort_by_key(|name| name.to_lowercase());
+    names
+}
+
+/// The values of a preset.
+pub fn preset(id: u64, name: &str) -> Option<BTreeMap<String, Value>> {
+    serde_json::from_slice(&std::fs::read(preset_file(id, name)?).ok()?).ok()
+}
+
+/// Keep the values under a name.
+pub fn save_preset(id: u64, name: &str, values: &BTreeMap<String, Value>) -> Result<(), String> {
+    let path = preset_file(id, name).ok_or("a preset needs a name")?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(path, serde_json::to_vec_pretty(values).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
 }
 
 /// Tell the renderer the new value of a property of `wallpaper`.

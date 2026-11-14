@@ -1,0 +1,662 @@
+// The settings, set out like Wallpaper Engine's: four tabs, framed groups, a name at
+// the left of each row and its control at the right. A row that has no meaning here
+// (a Windows setting, a 3D effect the renderer does not draw) is shown where it is in
+// the original, greyed, so that the place of everything stays familiar.
+
+import { Theme, L, Tip } from "theme.slint";
+import { Icons, Icon, Glyph } from "icons.slint";
+import { Btn, Check, DropList, Field, Rail, Scroll, GroupBox, Link, Hint } from "widgets.slint";
+
+export struct SettingsValues {
+    /// "Воспроизведение": the choice of each row, among the row's own
+    /// (run, mute, pause [per monitor, all], stop; see the rows).
+    focus: int,
+    maximized: int,
+    fullscreen: int,
+    playing: int,
+    sleep: int,
+    /// More than one monitor: pausing is per monitor or all of them.
+    several: bool,
+    fps: int,
+    /// 0 full, 1 half.
+    texture: int,
+    autostart: bool,
+    /// 0 English, 1 Русский.
+    language: int,
+    still: bool,
+    audio: bool,
+    volume: int,
+    video-gpu: bool,
+}
+
+export struct PluginEntry {
+    name: string,
+    path: string,
+    kind: string,
+    loaded: bool,
+}
+
+// A row: the name in grey at the left half, the control in the right half.
+component Row inherits Rectangle {
+    in property <string> label;
+    in property <string> hint;
+    in property <bool> enabled: true;
+    in property <length> split: self.width / 2;
+    height: 34px;
+    Text {
+        x: 0;
+        width: root.split - 6px;
+        text: root.label;
+        color: Theme.faint;
+        font-size: 12.6px;
+        vertical-alignment: center;
+        wrap: word-wrap;
+        opacity: root.enabled ? 1 : 0.6;
+    }
+    // What the row does here (or why it does nothing), under the pointer.
+    TouchArea {
+        width: root.split;
+        changed has-hover => {
+            if root.hint != "" {
+                if self.has-hover {
+                    Tip.text = root.hint;
+                    Tip.x = self.absolute-position.x + 20px;
+                    Tip.y = self.absolute-position.y + root.height;
+                } else if Tip.text == root.hint {
+                    Tip.text = "";
+                }
+            }
+        }
+    }
+    VerticalLayout {
+        x: root.split;
+        width: parent.width - root.split;
+        alignment: center;
+        HorizontalLayout {
+            spacing: 6px;
+            @children
+        }
+    }
+}
+
+// A drop-down in a row.
+component Pick inherits DropList {
+    font-size: 12.6px;
+}
+
+// A check box in a row.
+component Tick inherits Check { }
+
+// A group: a frame with a heading, its rows inside.
+component Group inherits VerticalLayout {
+    in property <string> title;
+    in property <Glyph> icon;
+    padding-top: 20px;
+    GroupBox {
+        title: root.title;
+        icon: root.icon;
+        VerticalLayout {
+            padding-left: 10px;
+            padding-right: 10px;
+            padding-top: 10px;
+            padding-bottom: 5px;
+            @children
+        }
+    }
+}
+
+export component SettingsView inherits Rectangle {
+    in-out property <SettingsValues> values;
+    in-out property <int> tab;
+    in property <string> about;
+    in property <string> caption;
+    in property <[PluginEntry]> plugins;
+    callback accepted();
+    callback cancelled();
+    callback reset();
+
+    property <string> not-here: L.t("Not available on Linux.", "На Linux этого нет.");
+    property <string> not-drawn: L.t("The renderer does not draw 3D scenes, so this has nothing to change.", "Рендерер не рисует 3D-сцены, поэтому менять тут нечего.");
+    /// The choices of a row of "Воспроизведение", as the original lists them.
+    pure function choices(mute: bool, several: bool, stop: bool) -> [string] {
+        if (mute && several && stop) {
+            return [L.t("Keep running", "Продолжать работу"), L.t("Mute", "Заглушить"), L.t("Pause per display", "Пауза на мониторе"), L.t("Pause all", "Приостановить все"), L.t("Stop (free memory)", "Остановить (освободить память)")];
+        }
+        if (mute && several) {
+            return [L.t("Keep running", "Продолжать работу"), L.t("Mute", "Заглушить"), L.t("Pause per display", "Пауза на мониторе"), L.t("Pause all", "Приостановить все")];
+        }
+        if (mute && stop) {
+            return [L.t("Keep running", "Продолжать работу"), L.t("Mute", "Заглушить"), L.t("Pause", "Пауза"), L.t("Stop (free memory)", "Остановить (освободить память)")];
+        }
+        if (mute) {
+            return [L.t("Keep running", "Продолжать работу"), L.t("Mute", "Заглушить"), L.t("Pause", "Пауза")];
+        }
+        return [L.t("Keep running", "Продолжать работу"), L.t("Pause", "Пауза"), L.t("Stop (free memory)", "Остановить (освободить память)")];
+    }
+
+    background: #00000080;
+    TouchArea { }
+
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 550px;
+        height: min(610px, parent.height - 20px);
+        background: Theme.bg;
+        border-width: 1px;
+        border-color: Theme.primary;
+
+        // The title and the cross.
+        Text {
+            y: 5px;
+            width: parent.width;
+            text: L.t("Settings", "Настройки");
+            color: Theme.text;
+            font-size: 15.4px;
+            horizontal-alignment: center;
+        }
+        Rectangle {
+            x: parent.width - 45px;
+            y: 1px;
+            width: 44px;
+            height: 28px;
+            background: cross.has-hover ? #e04343 : transparent;
+            animate background { duration: 200ms; }
+            Path {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 11px;
+                height: 11px;
+                viewbox-width: 11;
+                viewbox-height: 11;
+                commands: "M0.5 0.5 L10.5 10.5 M10.5 0.5 L0.5 10.5";
+                stroke: cross.has-hover ? Theme.white : Theme.field-text;
+                stroke-width: 1px;
+            }
+            cross := TouchArea {
+                clicked => { root.cancelled(); }
+            }
+        }
+
+        // The tabs, standing on their line.
+        Rectangle {
+            x: 19px;
+            y: 33px;
+            width: parent.width - 38px;
+            height: 27px;
+            Rectangle {
+                y: 24px;
+                height: 3px;
+                background: Theme.primary;
+            }
+            HorizontalLayout {
+                alignment: start;
+                spacing: 2px;
+                height: 24px;
+                for name[i] in [L.t("Performance", "Производительность"), L.t("General", "Общее"), L.t("Plugins", "Плагины"), L.t("About", "О приложении")]: Rectangle {
+                    width: label.preferred-width + 12px;
+                    background: root.tab == i ? Theme.primary : transparent;
+                    border-width: root.tab != i && pick.has-hover ? 1px : 0;
+                    border-color: Theme.primary;
+                    label := Text {
+                        x: 6px;
+                        y: root.tab == i ? 0 : 2px;
+                        height: parent.height;
+                        text: name;
+                        color: root.tab == i ? Theme.white : Theme.field-text;
+                        font-size: Theme.size;
+                        vertical-alignment: center;
+                    }
+                    pick := TouchArea {
+                        clicked => { root.tab = i; }
+                    }
+                }
+            }
+        }
+
+        // ------------------------------------------------------------ performance
+        if root.tab == 0: first := Scroll {
+            x: 19px;
+            y: 65px;
+            width: parent.width - 29px;
+            height: parent.height - 65px - 60px;
+            content-height: one.preferred-height + 10px;
+            one := VerticalLayout {
+                width: first.visible-width - 2px;
+                alignment: start;
+                Group {
+                    title: L.t("Playback", "Воспроизведение");
+                    icon: Icons.play;
+                    Row {
+                        label: L.t("Other application focused:", "Другое приложение выбрано:");
+                        hint: L.t("Hyprland: a window has the focus on the monitor.", "Hyprland: на мониторе окно в фокусе.");
+                        Pick {
+                            options: root.choices(true, root.values.several, false);
+                            index: root.values.focus;
+                            selected(i) => { root.values.focus = i; }
+                        }
+                    }
+                    Row {
+                        label: L.t("Other application maximized:", "Другое приложение развёрнуто:");
+                        hint: L.t("Hyprland: a window maximised over the monitor.", "Hyprland: окно, развёрнутое на монитор.");
+                        Pick {
+                            options: root.choices(true, root.values.several, true);
+                            index: root.values.maximized;
+                            selected(i) => { root.values.maximized = i; }
+                        }
+                    }
+                    Row {
+                        label: L.t("Other application fullscreen:", "Другое приложение в полный экран:");
+                        hint: L.t("Hyprland. Paused, the monitor keeps the wallpaper's last frame and does no work. Stopped, the renderer goes when every monitor is covered, and the video memory with it; the scene starts over afterwards.", "Hyprland. На паузе монитор держит последний кадр обоев и ничего не считает. При остановке рендерер выгружается, когда закрыты все мониторы, и видеопамять освобождается; потом сцена начинается заново.");
+                        Pick {
+                            options: root.choices(true, root.values.several, true);
+                            index: root.values.fullscreen;
+                            selected(i) => { root.values.fullscreen = i; }
+                        }
+                    }
+                    Row {
+                        label: L.t("Other application playing audio:", "Другое приложение проигрывает аудио:");
+                        hint: L.t("Another program's sound, as the sound server (PipeWire, PulseAudio) has it.", "Звук другой программы, как его видит звуковой сервер (PipeWire, PulseAudio).");
+                        Pick {
+                            options: root.choices(true, false, false);
+                            index: root.values.playing;
+                            selected(i) => { root.values.playing = i; }
+                        }
+                    }
+                    Row {
+                        label: L.t("Display asleep:", "Монитор в спящем режиме:");
+                        hint: L.t("Hyprland: the monitor's power is off (DPMS).", "Hyprland: питание монитора выключено (DPMS).");
+                        Pick {
+                            options: root.choices(false, false, true);
+                            index: root.values.sleep;
+                            selected(i) => { root.values.sleep = i; }
+                        }
+                    }
+                    Row {
+                        label: L.t("Application rules:", "Правила для приложений:");
+                        enabled: false;
+                        hint: root.not-here;
+                        Btn {
+                            horizontal-stretch: 1;
+                            kind: 1;
+                            enabled: false;
+                            font-size: 12.6px;
+                            text: L.t("Edit", "Редактировать");
+                        }
+                    }
+                }
+                Group {
+                    title: L.t("Quality", "Качество");
+                    icon: Icons.award;
+                    // Four at once: the frame rate and the textures.
+                    HorizontalLayout {
+                        height: 34px;
+                        spacing: 1px;
+                        for preset[i] in [L.t("Low", "Низкое"), L.t("Medium", "Среднее"), L.t("High", "Высокое"), L.t("Ultra", "Ультра")]: Btn {
+                            y: 4px;
+                            horizontal-stretch: 1;
+                            kind: 1;
+                            font-size: 12.6px;
+                            text: preset;
+                            clicked => {
+                                root.values.fps = i == 0 ? 15 : i == 1 ? 25 : i == 2 ? 30 : 60;
+                                root.values.texture = i == 0 ? 1 : 0;
+                            }
+                        }
+                    }
+                    Row {
+                        label: L.t("FPS:", "Кадров/сек.:");
+                        Rail {
+                            horizontal-stretch: 1;
+                            minimum: 10;
+                            maximum: 240;
+                            value: root.values.fps;
+                            changed(v) => { root.values.fps = round(v); }
+                        }
+                        Text {
+                            width: 28px;
+                            text: root.values.fps;
+                            color: Theme.text;
+                            font-size: 12.6px;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Row {
+                        label: L.t("Anti-aliasing:", "Полноэкранное сглаживание:");
+                        enabled: false;
+                        hint: L.t("Scenes are flat layers drawn pixel to pixel: there are no edges to smooth.", "Сцены это плоские слои, нарисованные пиксель в пиксель: сглаживать нечего.");
+                        Pick { enabled: false; up: true; options: [L.t("None", "Нет")]; index: 0; }
+                    }
+                    Row {
+                        label: L.t("Post-processing:", "Пост-обработка:");
+                        enabled: false;
+                        hint: L.t("A scene's bloom is always drawn; it is switched in the scene, not here.", "Свечение сцены рисуется всегда; оно выключается в самой сцене, не здесь.");
+                        Pick { enabled: false; up: true; options: [L.t("Enabled", "Включено")]; index: 0; }
+                    }
+                    Row {
+                        label: L.t("Texture resolution:", "Разрешение текстуры:");
+                        hint: L.t("High performance reads textures no larger than 2048 pixels a side: less video memory, softer pictures on large monitors.", "«Высокая производительность» читает текстуры не больше 2048 пикселей по стороне: меньше видеопамяти, на больших мониторах картинка мягче.");
+                        Pick {
+                            up: true;
+                            options: [L.t("High quality", "Высокое качество"), L.t("High performance", "Высокая производительность")];
+                            index: root.values.texture;
+                            selected(i) => { root.values.texture = i; }
+                        }
+                    }
+                    Row {
+                        label: L.t("Shadows:", "Тени:");
+                        enabled: false;
+                        hint: root.not-drawn;
+                        Pick { enabled: false; up: true; options: [L.t("Disabled", "Выключено")]; index: 0; }
+                    }
+                    Row {
+                        label: L.t("Volumetric lighting:", "Объемные лучи:");
+                        enabled: false;
+                        hint: root.not-drawn;
+                        Pick { enabled: false; up: true; options: [L.t("Disabled", "Выключено")]; index: 0; }
+                    }
+                    Row {
+                        label: L.t("Reflections:", "Отражения:");
+                        enabled: false;
+                        hint: root.not-drawn;
+                        Tick { enabled: false; }
+                    }
+                }
+            }
+        }
+
+        // ------------------------------------------------------------ general
+        if root.tab == 1: second := Scroll {
+            x: 19px;
+            y: 65px;
+            width: parent.width - 29px;
+            height: parent.height - 65px - 60px;
+            content-height: two.preferred-height + 10px;
+            two := VerticalLayout {
+                width: second.visible-width - 2px;
+                alignment: start;
+                Group {
+                    title: L.t("Automatic Startup", "Автоматический запуск");
+                    icon: Icons.star;
+                    Row {
+                        label: L.t("Start with the session:", "Запускать с сеансом:");
+                        hint: L.t("Keeps the wallpaper on the desktop from login: a systemd user service that runs `we-linux daemon`.", "Держит обои на рабочем столе с самого входа: пользовательская служба systemd, которая запускает `we-linux daemon`.");
+                        Tick {
+                            checked: root.values.autostart;
+                            toggled => { root.values.autostart = !root.values.autostart; }
+                        }
+                    }
+                    Row {
+                        label: L.t("Protect against crashes:", "Защита от сбоев:");
+                        enabled: false;
+                        hint: L.t("Always on: a renderer that exits is started again, and one that keeps exiting is left alone.", "Включено всегда: упавший рендерер запускается снова, а тот, что падает раз за разом, остаётся выключенным.");
+                        Tick { enabled: false; checked: true; }
+                    }
+                    Row {
+                        label: L.t("Safe start after hibernation:", "Безопасный старт после гибернации:");
+                        enabled: false;
+                        hint: root.not-here;
+                        Tick { enabled: false; }
+                    }
+                }
+                Group {
+                    title: L.t("Basic Setup", "Основные настройки");
+                    icon: Icons.gear;
+                    Row {
+                        label: L.t("Language:", "Язык интерфейса:");
+                        Pick {
+                            options: ["English", "Русский"];
+                            index: root.values.language;
+                            selected(i) => { root.values.language = i; }
+                        }
+                    }
+                    Row {
+                        label: L.t("Hotkeys:", "Горячие клавиши:");
+                        enabled: false;
+                        hint: L.t("Keys are bound in the compositor: bind `we-linux apply <id>`, `we-linux off` or anything else of the command line.", "Клавиши назначаются в композиторе: повесь на них `we-linux apply <id>`, `we-linux off` или что угодно из командной строки.");
+                        Btn {
+                            horizontal-stretch: 1;
+                            kind: 1;
+                            enabled: false;
+                            font-size: 12.6px;
+                            text: L.t("Edit", "Редактировать");
+                        }
+                    }
+                    Row {
+                        label: L.t("Wallpaper browser transition:", "Переход предпросмотра:");
+                        enabled: false;
+                        hint: root.not-here;
+                        Pick { enabled: false; options: [L.t("None", "Нет")]; index: 0; }
+                    }
+                }
+                Group {
+                    title: "Linux";
+                    icon: Icons.linux;
+                    Row {
+                        label: L.t("Still frame for awww, swww or hyprpaper:", "Стоп-кадр для awww, swww или hyprpaper:");
+                        hint: L.t("Gives your static wallpaper program a frame of the live wallpaper, so the desktop shows it before the renderer starts and while it is stopped.", "Отдаёт программе статичных обоев кадр живых обоев: рабочий стол показывает его, пока рендерер не запустился и пока он остановлен.");
+                        Tick {
+                            checked: root.values.still;
+                            toggled => { root.values.still = !root.values.still; }
+                        }
+                    }
+                    Row {
+                        label: L.t("Media integration support:", "Поддержка интеграции медиа:");
+                        enabled: false;
+                        hint: L.t("Always on: a wallpaper that shows what is playing hears of it through playerctl, and nothing runs until one asks.", "Включено всегда: обои, которые показывают текущий трек, узнают о нём через playerctl, и ничего не работает, пока такие обои не попросят.");
+                        Tick { enabled: false; checked: true; }
+                    }
+                }
+                Group {
+                    title: L.t("Appearance", "Внешний вид");
+                    icon: Icons.palette;
+                    Row {
+                        label: L.t("Theme:", "Тема:");
+                        enabled: false;
+                        hint: L.t("There is one theme.", "Тема одна.");
+                        Pick { enabled: false; options: [L.t("Dark", "Тёмная")]; index: 0; }
+                    }
+                    Row {
+                        label: L.t("UI hardware acceleration:", "Аппаратное ускорение пользовательского интерфейса:");
+                        enabled: false;
+                        hint: L.t("The window is drawn by the processor and takes no video memory.", "Окно рисуется процессором и не занимает видеопамять.");
+                        Tick { enabled: false; }
+                    }
+                }
+                Group {
+                    title: L.t("Audio", "Звук");
+                    icon: Icons.volume-high;
+                    Row {
+                        label: L.t("Audio output:", "Вывод звука:");
+                        hint: L.t("Plays the wallpaper's own sound.", "Включает собственный звук обоев.");
+                        Tick {
+                            checked: root.values.audio;
+                            toggled => { root.values.audio = !root.values.audio; }
+                        }
+                    }
+                    Row {
+                        label: L.t("Volume:", "Громкость:");
+                        enabled: root.values.audio;
+                        Rail {
+                            horizontal-stretch: 1;
+                            enabled: root.values.audio;
+                            minimum: 0;
+                            maximum: 100;
+                            value: root.values.volume;
+                            changed(v) => { root.values.volume = round(v); }
+                        }
+                        Rectangle {
+                            width: 48px;
+                            height: 24px;
+                            background: Theme.field;
+                            border-width: 1px;
+                            border-color: Theme.field-border;
+                            Text {
+                                x: 6px;
+                                text: root.values.volume;
+                                color: Theme.field-text;
+                                font-size: 12.6px;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    Row {
+                        label: L.t("Audio recording device:", "Устройство ввода звука:");
+                        enabled: false;
+                        hint: L.t("Scenes that react to sound listen to what the default output plays.", "Сцены, которые реагируют на звук, слушают то, что играет устройство вывода по умолчанию.");
+                        Pick { enabled: false; options: [L.t("Default", "По умолчанию")]; index: 0; }
+                    }
+                }
+                Group {
+                    title: L.t("Video", "Видео");
+                    icon: Icons.film;
+                    Row {
+                        label: L.t("Video framework:", "Видео фреймворк:");
+                        enabled: false;
+                        hint: L.t("Videos are played by libmpv.", "Видео проигрывает libmpv.");
+                        Pick { enabled: false; options: ["libmpv"]; index: 0; }
+                    }
+                    Row {
+                        label: L.t("Video hardware acceleration:", "Аппаратное ускорение видео:");
+                        hint: L.t("Decodes videos on the graphics card: less processor load, a few hundred megabytes of video memory more. Off, they are decoded by the processor at the monitor's size.", "Декодирует видео на видеокарте: меньше нагрузка на процессор, на несколько сотен мегабайт больше видеопамяти. Без этого видео декодирует процессор в размере монитора.");
+                        Tick {
+                            checked: root.values.video-gpu;
+                            toggled => { root.values.video-gpu = !root.values.video-gpu; }
+                        }
+                    }
+                    Row {
+                        label: L.t("Video loop:", "Зацикливание видео:");
+                        enabled: false;
+                        hint: L.t("MP4 and MOV videos loop without a seam.", "Видео MP4 и MOV зацикливаются без шва.");
+                        Pick { enabled: false; options: [L.t("Seamless", "Бесшовное")]; index: 0; }
+                    }
+                }
+                Group {
+                    title: L.t("Reset", "Сброс");
+                    icon: Icons.triangle-exclamation;
+                    Row {
+                        label: L.t("Reset config:", "Сброс конфигурации:");
+                        Btn {
+                            horizontal-stretch: 1;
+                            kind: 2;
+                            font-size: 12.6px;
+                            text: L.t("RESET", "СБРОСИТЬ");
+                            clicked => { root.reset(); }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ------------------------------------------------------------ plugins
+        if root.tab == 2: Rectangle {
+            x: 19px;
+            y: 85px;
+            width: parent.width - 38px;
+            height: parent.height - 85px - 60px;
+            border-width: 1px;
+            border-color: Theme.field-border;
+            third := Scroll {
+                x: 1px;
+                y: 1px;
+                width: parent.width - 2px;
+                height: parent.height - 2px;
+                content-height: three.preferred-height;
+                three := VerticalLayout {
+                    width: third.visible-width;
+                    alignment: start;
+                    if root.plugins.length == 0: Text {
+                        height: 60px;
+                        text: L.t("No plugins found. They go to ~/.config/wepaper/plugins.", "Плагинов не найдено. Они кладутся в ~/.config/wepaper/plugins.");
+                        color: Theme.faint;
+                        font-size: Theme.size;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                    }
+                    for plugin in root.plugins: Rectangle {
+                        height: 58px;
+                        Rectangle {
+                            y: parent.height - 1px;
+                            height: 1px;
+                            background: Theme.primary;
+                        }
+                        Check {
+                            x: 10px;
+                            y: (parent.height - self.height) / 2;
+                            width: 22px;
+                            height: 22px;
+                            enabled: false;
+                            checked: plugin.loaded;
+                        }
+                        Text {
+                            x: 88px;
+                            y: 10px;
+                            text: plugin.name;
+                            color: Theme.text;
+                            font-size: Theme.size;
+                        }
+                        Text {
+                            x: parent.width - self.width - 10px;
+                            y: 10px;
+                            text: plugin.loaded ? L.t("Loaded", "Загружен") : L.t("Not loaded", "Не загружен");
+                            color: plugin.loaded ? Theme.success : Theme.filtered;
+                            font-size: Theme.size;
+                        }
+                        Text {
+                            x: 88px;
+                            y: 32px;
+                            width: parent.width - 100px;
+                            text: plugin.kind + "  ·  " + plugin.path;
+                            color: Theme.faint;
+                            font-size: 11.2px;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ------------------------------------------------------------ about
+        if root.tab == 3: fourth := Scroll {
+            x: 19px;
+            y: 70px;
+            width: parent.width - 29px;
+            height: parent.height - 70px - 60px;
+            content-height: four.preferred-height + 10px;
+            four := VerticalLayout {
+                width: fourth.visible-width - 2px;
+                alignment: start;
+                spacing: 8px;
+                Text {
+                    text: root.about;
+                    color: Theme.text;
+                    font-size: Theme.size;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        // The buttons, at the bottom right.
+        HorizontalLayout {
+            x: 19px;
+            y: parent.height - 45px;
+            width: parent.width - 38px;
+            height: 26px;
+            alignment: end;
+            spacing: 10px;
+            Btn {
+                width: 100px;
+                kind: 1;
+                text: "OK";
+                clicked => { root.accepted(); }
+            }
+            Btn {
+                width: 100px;
+                text: L.t("Cancel", "Отмена");
+                clicked => { root.cancelled(); }
+            }
+        }
+    }
+}

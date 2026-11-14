@@ -18,7 +18,6 @@ pub struct Installed {
     pub customizable: bool,
     /// Everyone, Questionable, Mature.
     pub rating: String,
-    pub description: String,
     /// Seconds since the epoch.
     pub modified: u64,
 }
@@ -97,7 +96,6 @@ fn read_item(dir: &Path) -> Option<Installed> {
         audio_responsive: json["general"]["supportsaudioprocessing"].as_bool().unwrap_or(false),
         customizable: json["general"]["properties"].as_object().is_some_and(|p| p.keys().any(|k| k != "schemecolor")),
         rating: Some(string("contentrating")).filter(|r| !r.is_empty()).unwrap_or_else(|| "Everyone".into()),
-        description: string("description"),
         modified,
     })
 }

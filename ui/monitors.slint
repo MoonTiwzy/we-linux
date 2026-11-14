@@ -1,0 +1,351 @@
+// "Choose monitor": the panel that comes down over the grid, with the monitors drawn
+// as they stand on the desk.
+
+import { Theme, L, Tip } from "theme.slint";
+import { Icons, Icon } from "icons.slint";
+import { Btn, Check, DropList, Menu } from "widgets.slint";
+
+export struct MonitorEntry {
+    name: string,
+    /// "2560x1440".
+    detail: string,
+    /// The title of what it shows, or nothing.
+    wallpaper: string,
+    /// Where it stands among the others (the leftmost and topmost at 0) and how
+    /// large it is, in the desk's pixels.
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    image: image,
+    has-image: bool,
+}
+
+export component MonitorPanel inherits Rectangle {
+    in-out property <bool> open;
+    in property <[MonitorEntry]> monitors;
+    /// -1: one wallpaper cloned on every monitor.
+    in-out property <int> index: -1;
+    in-out property <bool> on-start: true;
+    /// The window as it was when the panel opened, blurred: what shows behind it.
+    in property <image> backdrop;
+    callback picked(int);
+    callback cleared(int);
+    callback on-start-changed(bool);
+    callback profiles(bool);
+
+    /// The desk: how large the box around every monitor is, in its pixels.
+    in property <float> wide: 1;
+    in property <float> high: 1;
+    property <length> box-width: 660px;
+    property <length> box-height: 200px;
+    property <float> scale: min(box-width / 1px / max(1, wide), box-height / 1px / max(1, high));
+    // The card of the selected wallpaper stays in view at the right.
+    property <length> covered: self.width - 338px;
+
+    // What is behind: blurred, half covered in the window's grey.
+    Rectangle {
+        x: 0;
+        width: root.covered;
+        clip: true;
+        opacity: root.open ? 1 : 0;
+        animate opacity { duration: 200ms; easing: ease; }
+        Image {
+            x: -1px;
+            y: -1px;
+            width: root.width + 2px;
+            height: root.height + 2px;
+            source: root.backdrop;
+            image-fit: fill;
+        }
+        Rectangle { background: #22222280; }
+        if root.open: TouchArea {
+            clicked => { root.open = false; }
+        }
+    }
+    Rectangle {
+        x: root.covered;
+        width: 1px;
+        background: Theme.primary;
+        opacity: root.open ? 1 : 0;
+        animate opacity { duration: 200ms; easing: ease; }
+    }
+
+    Rectangle {
+        x: 0;
+        width: root.covered;
+        clip: true;
+        panel := Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: root.open ? -1px : -600px;
+            animate y { duration: 200ms; easing: ease; }
+            width: min(root.width >= 1360px ? 750px : 550px, parent.width);
+            height: content.preferred-height + 26px;
+            background: Theme.bg;
+            border-width: 1px;
+            border-color: Theme.primary;
+            TouchArea { }
+            content := VerticalLayout {
+                x: 26px;
+                y: 26px;
+                width: parent.width - 52px;
+                alignment: start;
+                spacing: 0px;
+                // The arrow that puts the panel away.
+                Rectangle {
+                    height: 26px;
+                    Icon {
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        glyph: Icons.chevron-up;
+                        size: 16px;
+                        tint: up.has-hover ? Theme.primary-hover : Theme.primary;
+                    }
+                    up := TouchArea {
+                        clicked => { root.open = false; }
+                    }
+                }
+                Rectangle { height: 10px; }
+                Text {
+                    height: 41px;
+                    text: L.t("Choose Display", "Выбрать монитор");
+                    color: Theme.text;
+                    font-size: 36px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    TouchArea {
+                        clicked => { root.open = false; }
+                    }
+                }
+                Rectangle { height: 27px; }
+                HorizontalLayout {
+                    padding-left: root.width >= 1360px ? 100px : 0px;
+                    padding-right: root.width >= 1360px ? 100px : 0px;
+                    VerticalLayout {
+                        spacing: 5px;
+                        DropList {
+                            centered: true;
+                            options: [
+                                L.t("Wallpaper per display", "Отдельные обои на каждом мониторе"),
+                                L.t("Stretch single wallpaper", "Подогнать единый фон"),
+                                L.t("Clone single wallpaper", "Клонировать обои"),
+                            ];
+                            // One wallpaper spanning every monitor is the renderer's to learn.
+                            usable: [true, false, true];
+                            index: root.index < 0 ? 2 : 0;
+                            selected(i) => {
+                                root.index = i == 2 ? -1 : 0;
+                                root.picked(root.index);
+                            }
+                        }
+                        if root.index >= 0: HorizontalLayout {
+                            spacing: 5px;
+                            Btn {
+                                horizontal-stretch: 1;
+                                enabled: false;
+                                fixed-icon: true;
+                                icon: Icons.scissors;
+                                text: L.t("Split", "Разделить");
+                            }
+                            Btn {
+                                horizontal-stretch: 1;
+                                enabled: false;
+                                fixed-icon: true;
+                                icon: Icons.object-group;
+                                text: L.t("Group", "Группировать");
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 5px;
+                            Btn {
+                                horizontal-stretch: 1;
+                                fixed-icon: true;
+                                icon: Icons.folder-open;
+                                text: L.t("Load profile", "Загрузить профиль");
+                                clicked => { root.profiles(false); }
+                            }
+                            Btn {
+                                horizontal-stretch: 1;
+                                fixed-icon: true;
+                                icon: Icons.floppy-disk;
+                                text: L.t("Save profile", "Сохранить профиль");
+                                clicked => { root.profiles(true); }
+                            }
+                        }
+                    }
+                }
+                Rectangle { height: 44px; }
+                // The monitors, to scale.
+                HorizontalLayout {
+                    alignment: center;
+                    desk := Rectangle {
+                        width: root.box-width;
+                        height: root.box-height;
+                        for mon[i] in root.monitors: Rectangle {
+                            property <bool> active: root.index == i || root.index < 0;
+                            x: (parent.width - root.wide * root.scale * 1px) / 2 + mon.x * root.scale * 1px;
+                            y: (parent.height - root.high * root.scale * 1px) / 2 + mon.y * root.scale * 1px;
+                            width: mon.w * root.scale * 1px;
+                            height: mon.h * root.scale * 1px;
+                            border-radius: 4px;
+                            background: mon.has-image ? #333333 : #e7e7e7;
+                            clip: true;
+                            if mon.has-image: Image {
+                                width: parent.width;
+                                height: parent.height;
+                                source: mon.image;
+                                image-fit: cover;
+                            }
+                            // Its size and name, in the corner.
+                            Rectangle {
+                                x: 3px;
+                                y: 3px;
+                                width: size.preferred-width + 2px;
+                                height: 14px;
+                                background: #444444;
+                                size := Text {
+                                    x: 1px;
+                                    y: (parent.height - self.height) / 2;
+                                    text: mon.detail + ", " + mon.name;
+                                    color: Theme.white;
+                                    font-size: 11.2px;
+                                }
+                            }
+                            Rectangle {
+                                x: (parent.width - 35px) / 2;
+                                y: (parent.height - 35px) / 2;
+                                width: 35px;
+                                height: 35px;
+                                border-radius: 17.5px;
+                                background: #666666;
+                                Text {
+                                    text: i + 1;
+                                    color: Theme.white;
+                                    font-size: Theme.size;
+                                    font-weight: 700;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            if mon.wallpaper != "": Rectangle {
+                                y: parent.height - self.height - 3px;
+                                x: 32px;
+                                width: parent.width - 58px;
+                                height: 20px;
+                                Text {
+                                    width: parent.width;
+                                    text: mon.wallpaper;
+                                    color: mon.has-image ? Theme.white : #333333;
+                                    font-size: 12.6px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                            }
+                            mta := TouchArea {
+                                clicked => {
+                                    root.index = i;
+                                    root.picked(i);
+                                }
+                                double-clicked => {
+                                    root.index = i;
+                                    root.picked(i);
+                                    root.open = false;
+                                }
+                            }
+                            // The monitor's sound: the renderer has one volume for all.
+                            Rectangle {
+                                x: 3px;
+                                y: parent.height - self.height - 3px;
+                                width: 28px;
+                                height: 24px;
+                                background: #444444;
+                                opacity: 0.6;
+                                Icon {
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                    glyph: Icons.volume-high;
+                                    size: 14px;
+                                    tint: Theme.white;
+                                }
+                                TouchArea {
+                                    changed has-hover => {
+                                        if self.has-hover {
+                                            Tip.text = L.t("The sound of one display alone is not something the renderer can do yet.", "Звук отдельного монитора рендерер пока не умеет.");
+                                            Tip.x = self.absolute-position.x;
+                                            Tip.y = self.absolute-position.y + 26px;
+                                        } else {
+                                            Tip.text = "";
+                                        }
+                                    }
+                                }
+                            }
+                            // What the monitor has, at the bottom right.
+                            Rectangle {
+                                x: parent.width - self.width - 3px;
+                                y: parent.height - self.height - 3px;
+                                width: 20px;
+                                height: 24px;
+                                background: menu.has-hover ? #222222 : #444444;
+                                Icon {
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                    glyph: Icons.caret-down;
+                                    size: 14px;
+                                    tint: Theme.white;
+                                }
+                                menu := TouchArea {
+                                    clicked => { drop.show(); }
+                                }
+                                drop := Menu {
+                                    x: parent.width - 200px;
+                                    y: parent.height;
+                                    menu-width: 200px;
+                                    entries: [
+                                        { label: L.t("Remove Wallpaper", "Удалить обои"), icon: Icons.xmark, enabled: true, sub: -1, id: "remove" },
+                                    ];
+                                    activated(id) => { root.cleared(i); }
+                                }
+                            }
+                            Rectangle {
+                                border-radius: 4px;
+                                border-width: parent.active ? 3px : 2px;
+                                border-color: parent.active ? Theme.primary : mta.has-hover ? #9999bb : #111111;
+                            }
+                        }
+                    }
+                }
+                Rectangle { height: 56px; }
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 10px;
+                    Btn {
+                        width: 200px;
+                        kind: 1;
+                        text: L.t("Change Wallpaper", "Сменить обои");
+                        clicked => { root.open = false; }
+                    }
+                    Btn {
+                        width: 200px;
+                        text: L.t("Remove Wallpaper", "Удалить обои");
+                        clicked => { root.cleared(root.index); }
+                    }
+                }
+                if root.monitors.length > 1: VerticalLayout {
+                    padding-top: 13px;
+                    HorizontalLayout {
+                        alignment: start;
+                        Check {
+                            text: " " + L.t("Show on start", "Показывать при открытии");
+                            checked: root.on-start;
+                            toggled => {
+                                root.on-start = !root.on-start;
+                                root.on-start-changed(root.on-start);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

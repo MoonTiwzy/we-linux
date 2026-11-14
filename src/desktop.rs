@@ -164,12 +164,54 @@ pub fn clear_outputs() -> Result<(), String> {
     Ok(())
 }
 
-/// No live wallpaper: the engine stops, what is under it shows.
+/// No live wallpaper: the engine stops, what is under it shows. Back within
+/// about three seconds whatever the daemon and the renderer are doing.
 pub fn off() -> Result<(), String> {
+    take_off()?;
+    engine::see_off();
+    Ok(())
+}
+
+/// What `off` writes, for the window: it sees the renderer off on a thread
+/// of its own ([`engine::see_off`]) instead of waiting for it.
+pub fn take_off() -> Result<(), String> {
     let mut desktop = Desktop::load();
     desktop.wallpaper = None;
     desktop.outputs.clear();
     desktop.save()
+}
+
+fn profiles_dir() -> PathBuf {
+    config_dir().join("we-linux/profiles")
+}
+
+/// The saved monitor profiles: what each monitor showed, by name.
+pub fn profiles() -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(profiles_dir())
+        .map(|d| d.flatten().filter_map(|e| e.file_name().to_str().and_then(|n| n.strip_suffix(".json")).map(str::to_owned)).collect())
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+/// Keep what every monitor shows now under a name.
+pub fn save_profile(name: &str) -> Result<(), String> {
+    if name.is_empty() || name.contains('/') {
+        return Err(crate::lang::t("a profile needs a name without \"/\"", "у профиля должно быть имя без «/»").into());
+    }
+    write_json(&profiles_dir().join(format!("{name}.json")), &Desktop::load())
+}
+
+/// Put a saved profile on the desktop.
+pub fn load_profile(name: &str) -> Result<(), String> {
+    let profile: Desktop = std::fs::read(profiles_dir().join(format!("{name}.json")))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .ok_or_else(|| crate::tf!("the profile {name} is not readable", "профиль {name} не читается"))?;
+    // The picture is not ours to show: only the live wallpapers come back.
+    let desktop = Desktop { image: Desktop::load().image, ..profile };
+    desktop.save()?;
+    if desktop.wallpaper.is_some() || !desktop.outputs.is_empty() { engine::ensure_daemon() } else { Ok(()) }
 }
 
 /// The live wallpaper of every monitor, if any.
@@ -184,7 +226,13 @@ pub fn outputs() -> Vec<(String, PathBuf)> {
 
 pub struct Monitor {
     pub name: String,
+    /// Its size in pixels, as "2560x1440".
     pub detail: String,
+    /// Where it stands on the desk and how large it is there.
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
 }
 
 pub fn monitors() -> Vec<Monitor> {
@@ -192,19 +240,110 @@ pub fn monitors() -> Vec<Monitor> {
     if let Some(list) = hyprland.as_ref().and_then(|json| json.as_array()) {
         return list
             .iter()
-            .map(|m| Monitor {
-                name: m["name"].as_str().unwrap_or("").to_owned(),
-                detail: format!(
-                    "{}x{} @ {:.0} Hz",
-                    m["width"].as_i64().unwrap_or(0),
-                    m["height"].as_i64().unwrap_or(0),
-                    m["refreshRate"].as_f64().unwrap_or(0.0)
-                ),
+            .map(|m| {
+                let number = |key: &str| m[key].as_f64().unwrap_or(0.0) as f32;
+                let scale = if number("scale") > 0.0 { number("scale") } else { 1.0 };
+                // A monitor turned on its side is as wide as it is tall.
+                let turned = m["transform"].as_i64().unwrap_or(0) % 2 == 1;
+                let (width, height) = if turned { (number("height"), number("width")) } else { (number("width"), number("height")) };
+                Monitor {
+                    name: m["name"].as_str().unwrap_or("").to_owned(),
+                    detail: format!("{}x{}", width as i64, height as i64),
+                    x: number("x"),
+                    y: number("y"),
+                    width: width / scale,
+                    height: height / scale,
+                }
             })
             .collect();
     }
-    // Not Hyprland: the renderer knows the monitors it draws on.
-    engine::outputs().into_iter().map(|(name, width, height)| Monitor { name, detail: format!("{width}x{height}") }).collect()
+    // Not Hyprland: the renderer knows the monitors it draws on, not where they
+    // stand; they are put side by side.
+    let mut x = 0.0;
+    engine::outputs()
+        .into_iter()
+        .map(|(name, width, height)| {
+            let monitor = Monitor { name, detail: format!("{width}x{height}"), x, y: 0.0, width: width as f32, height: height as f32 };
+            x += width as f32;
+            monitor
+        })
+        .collect()
+}
+
+/// Take a monitor's own wallpaper off: it shows what every monitor does.
+pub fn remove_from(output: &str) -> Result<(), String> {
+    let mut desktop = Desktop::load();
+    desktop.outputs.remove(output);
+    desktop.save()
+}
+
+/// The family the system has for Arial, which is what the window is set in.
+pub fn ui_font() -> String {
+    Command::new("fc-match")
+        .args(["-f", "%{family}", "Arial"])
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .and_then(|families| families.split(',').next().map(|family| family.trim().to_owned()))
+        .filter(|family| !family.is_empty())
+        .unwrap_or_else(|| "Liberation Sans".to_owned())
+}
+
+/// Put a text on the clipboard (wl-copy does it).
+pub fn copy(text: &str) -> Result<(), String> {
+    use std::io::Write;
+    let mut child = Command::new("wl-copy")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "wl-copy (wl-clipboard) is not installed".to_owned())?;
+    if let Some(mut pipe) = child.stdin.take() {
+        pipe.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+    }
+    child.wait().map_err(|e| e.to_string()).and_then(|status| if status.success() { Ok(()) } else { Err("wl-copy did not take the text".to_owned()) })
+}
+
+const UNIT: &str = "we-linux.service";
+
+/// Whether systemd starts the daemon with the session.
+pub fn autostart() -> bool {
+    Command::new("systemctl")
+        .args(["--user", "is-enabled", UNIT])
+        .stderr(Stdio::null())
+        .output()
+        .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).trim() == "enabled")
+}
+
+/// Have systemd start the daemon with the graphical session, or no longer.
+pub fn set_autostart(on: bool) -> Result<(), String> {
+    let run = |args: &[&str]| {
+        let status = Command::new("systemctl")
+            .arg("--user")
+            .args(args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|e| format!("systemctl: {e}"))?;
+        if status.success() { Ok(()) } else { Err(format!("systemctl --user {} did not work", args.join(" "))) }
+    };
+    if !on {
+        return run(&["disable", UNIT]);
+    }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let unit = format!(
+        "[Unit]\nDescription=WE Linux: live wallpapers\nPartOf=graphical-session.target\nAfter=graphical-session.target\n\n\
+         [Service]\nExecStart={} daemon\nRestart=on-failure\n\n[Install]\nWantedBy=graphical-session.target\n",
+        exe.display()
+    );
+    let file = config_dir().join("systemd/user").join(UNIT);
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&file, unit).map_err(|e| e.to_string())?;
+    run(&["daemon-reload"])?;
+    run(&["enable", UNIT])
 }
 
 pub fn settings_file() -> PathBuf {
@@ -220,12 +359,19 @@ pub struct Settings {
     pub video_gpu: bool,
     pub audio: bool,
     pub volume: i32,
-    /// Hyprland: freeze the wallpaper of a monitor that shows a fullscreen
-    /// window; it goes on from the same frame after.
-    pub pause_fullscreen: bool,
-    /// Hyprland: stop the engine while every monitor shows a fullscreen
-    /// window (the video memory is freed, the scene starts over after).
-    pub stop_fullscreen: bool,
+    /// What a wallpaper does while another application is focused on its
+    /// monitor, maximised over it, fullscreen on it, while another application
+    /// plays sound, and while its monitor sleeps (Hyprland, but the sound):
+    /// "run", "mute", "pause" (that monitor), "pauseall" (every monitor) or
+    /// "stop" (the renderer goes once every monitor stops, and the video
+    /// memory with it). The original's "Воспроизведение".
+    pub playback_focus: String,
+    pub playback_maximized: String,
+    pub playback_fullscreen: String,
+    pub playback_audio: String,
+    pub playback_sleep: String,
+    /// Textures no larger than 2048 pixels a side.
+    pub texture_half: bool,
     /// Give awww, swww or hyprpaper a still of the wallpaper.
     pub still: bool,
     /// A shell command run when the wallpaper changes, with WE_LINUX_WALLPAPER,
@@ -235,13 +381,48 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { fps: 60, video_gpu: false, audio: false, volume: 50, pause_fullscreen: true, stop_fullscreen: false, still: true, hook: String::new() }
+        Self {
+            fps: 60,
+            video_gpu: false,
+            audio: false,
+            volume: 50,
+            playback_focus: "run".into(),
+            playback_maximized: "run".into(),
+            playback_fullscreen: "pause".into(),
+            playback_audio: "run".into(),
+            playback_sleep: "run".into(),
+            texture_half: false,
+            still: true,
+            hook: String::new(),
+        }
     }
 }
 
 impl Settings {
     pub fn load() -> Self {
-        std::fs::read(settings_file()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        let Some(mut json) = std::fs::read(settings_file()).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()) else {
+            return Self::default();
+        };
+        // Written before "Воспроизведение" had the original's choices: what
+        // was paused or stopped under a fullscreen or a maximised window still is.
+        if json.get("playback_fullscreen").is_none()
+            && let Some(map) = json.as_object_mut()
+        {
+            let flag = |key: &str| map.get(key).and_then(serde_json::Value::as_bool);
+            let fullscreen = match (flag("stop_fullscreen"), flag("pause_fullscreen")) {
+                (Some(true), _) => "stop",
+                (_, Some(false)) => "run",
+                _ => "pause",
+            };
+            let maximized = match map.get("maximized").and_then(serde_json::Value::as_i64) {
+                Some(1) => "pause",
+                Some(2) => "stop",
+                _ => "run",
+            };
+            map.insert("playback_fullscreen".into(), fullscreen.into());
+            map.insert("playback_maximized".into(), maximized.into());
+        }
+        serde_json::from_value(json).unwrap_or_default()
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -375,11 +556,17 @@ pub fn run_playlist() {
     }
 }
 
-/// Ask for a file with the desktop's own dialog (zenity or kdialog).
-pub fn pick_file() -> Result<Option<PathBuf>, String> {
-    let attempts: [(&str, &[&str]); 2] = [
-        ("zenity", &["--file-selection", "--title=Open a wallpaper"]),
-        ("kdialog", &["--getopenfilename", "."]),
+/// Ask for a file with the desktop's own dialog (zenity or kdialog): a
+/// picture, or what plays (a video, a wallpaper's project.json).
+pub fn pick_file(picture: bool) -> Result<Option<PathBuf>, String> {
+    let patterns: Vec<String> = if picture { IMAGES.iter().map(|e| format!("*.{e}")).collect() } else {
+        VIDEOS.iter().map(|e| format!("*.{e}")).chain(["project.json".to_owned()]).collect()
+    };
+    let zenity_filter = format!("--file-filter={}", patterns.join(" "));
+    let kdialog_filter = patterns.join(" ");
+    let attempts: [(&str, Vec<&str>); 2] = [
+        ("zenity", vec!["--file-selection", "--title=Open a wallpaper", &zenity_filter]),
+        ("kdialog", vec!["--getopenfilename", ".", &kdialog_filter]),
     ];
     for (program, args) in attempts {
         match Command::new(program).args(args).stderr(Stdio::null()).output() {
