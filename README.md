@@ -12,7 +12,7 @@
 [![NixOS](https://img.shields.io/badge/NixOS-flake-5277c3?logo=nixos&logoColor=white)](#nixos)
 ![Hyprland](https://img.shields.io/badge/Hyprland-first%20class-58e1ff)
 
-[Install](#install) · [First run](#first-run) · [Hyprland](#hyprland) · [Command line](#command-line) · [Troubleshooting](#troubleshooting)
+[Install](#install) · [First run](#first-run) · [Hyprland](#hyprland) · [Command line](#command-line) · [Troubleshooting](#troubleshooting) · [Русский](README.ru.md)
 
 <img src="assets/screenshot.jpg" alt="The workshop tab: search, filters, previews, the selected wallpaper on the right">
 
@@ -34,18 +34,20 @@ Engine's own window, plus a small daemon that keeps the wallpaper on your deskto
 - **Monitors.** One wallpaper everywhere, or a different one per monitor. Every monitor runs
   its own copy of the scene, so scripts that follow the pointer work per monitor.
 - **Playlists.** Timed or random, saved and loaded, running in the background.
-- **Light on the machine.** Rendering is done by a
-  [low-footprint fork of penguin-engine](https://github.com/MoonTiwzy/penguin-engine):
-  one process for all monitors, one video decoder shared between them.
+- **Light on the machine.** Rendering is done by [wepaper](https://github.com/MoonTiwzy/wepaper),
+  a renderer written for exactly this: one process and one OpenGL context for all monitors,
+  textures and video decoders shared between them, nothing running that no wallpaper needs.
+  Changing a setting or a property never restarts it.
 
-| One scene with a 4K video, two 1440p monitors | Video memory |
-|---|---|
-| stock penguin-engine 0.1.0 | 3.0 GB |
-| **WE Linux + the fork** | **0.3 GB** |
+| One scene with a 4K video, two 1440p monitors | Video memory | Memory | CPU |
+|---|---|---|---|
+| WE Linux before wepaper | 0.30 GB | 0.65 GB | 40-50% of a core |
+| **WE Linux with wepaper** | **0.13 GB** | **0.16 GB** | **20-25%** |
 
-<sub>RTX 5070, 60 fps, one scene measured; yours will differ. With the fork that scene also takes
-0.65 GB of RAM and 40-50% of one CPU core: it decodes the video on the CPU at the monitor's size,
-which is where the video memory went. Prefer the GPU path? It is one switch in Settings.</sub>
+<sub>RTX 5070, 60 fps, one scene measured; yours will differ. The video is decoded on the CPU at
+the monitor's size, once for both monitors; decoding on the GPU is one switch in Settings. More
+wallpapers, measured one by one, are in
+[wepaper's numbers](https://github.com/MoonTiwzy/wepaper/blob/main/docs/performance.md).</sub>
 
 English and Russian: the app asks on the first start, and the language box in Settings
 changes it later.
@@ -59,7 +61,8 @@ changes it later.
   carries Valve's `libsteam_api.so`; WE Linux finds it by itself and keeps a copy.
 - **Wayland** with layer-shell. Hyprland is what it is developed and tested on; Sway, niri,
   river and KDE Plasma have the protocol it needs.
-- A Vulkan driver.
+- OpenGL 3.3, and at run time `libmpv` (video and sound) and `ffmpeg` (cheaper copies of
+  oversized videos).
 
 ## Install
 
@@ -71,12 +74,13 @@ cd we-linux
 ./install.sh
 ```
 
-One command builds WE Linux and the renderer and puts `we-linux`, `penguind`, `penguinctl` and
-`scene-viewer` in `~/.local/bin`, with a menu entry. It needs Rust
-([rustup.rs](https://rustup.rs)) and the usual build tools; if the renderer does not build, the
-script prints the package list for Arch, Fedora and Debian.
+One command builds WE Linux and the renderer and puts `we-linux` and `wepaper` in
+`~/.local/bin`, with a menu entry. It needs Rust ([rustup.rs](https://rustup.rs)) and the usual
+build tools; if the renderer does not build, the script prints the package list for Arch,
+Fedora and Debian. The whole build takes about two minutes.
 
-`./install.sh --no-web` skips web wallpapers (no Servo) for a much shorter build.
+Web wallpapers are a plugin of the renderer (`wepaper-web`), built when GTK 4, WebKitGTK 6 and
+gtk4-layer-shell are installed; `./install.sh --no-web` leaves it out.
 `./install.sh --engine` rebuilds the renderer too, for an update.
 
 ### NixOS
@@ -114,8 +118,8 @@ Home Manager works the same way: `we-linux.homeManagerModules.default` and
 `nix flake check` boots a NixOS VM, starts a compositor in it and opens the window. Two things
 on NixOS to know:
 
-- Web wallpapers are not built (Servo downloads a prebuilt SpiderMonkey at build time, which a
-  Nix build cannot do). Scenes and videos work.
+- The package was moved to the new renderer together with everything else and has not been
+  built on a NixOS machine since. If it does not build for you, say so in an issue.
 - The workshop tabs load Valve's `libsteam_api.so` from one of your games. The package puts
   `libstdc++` on its library path for it; if the workshop still says Steam does not answer, run
   WE Linux through `steam-run we-linux` and tell us in an issue.
@@ -173,9 +177,9 @@ it) and `WE_LINUX_TITLE`.
 
 ```sh
 # Lua config (Hyprland 0.55+)
-hyprctl eval 'hl.layer_rule({ match = { namespace = "^(penguin-engine)$" }, order = -1, animation = "fade" })'
+hyprctl eval 'hl.layer_rule({ match = { namespace = "^(wepaper)$" }, order = -1, animation = "fade" })'
 # older configs
-hyprctl keyword layerrule "order -1, penguin-engine"
+hyprctl keyword layerrule "order -1, wepaper"
 ```
 
 If your Hyprland takes neither, add the rule to your config by hand.
@@ -188,7 +192,7 @@ we-linux                                  the window
 we-linux apply <ID|PATH> [--output NAME]  a workshop id, a wallpaper folder, a video or a
                                           picture; on every monitor, or on one
 we-linux off                              no live wallpaper
-we-linux status                           what is on the desktop, how many engines run
+we-linux status                           what is on the desktop
 we-linux doctor                           a full report for a bug: versions, what was found,
                                           the settings, the engine's log
 we-linux workshop [TEXT] [--sort top|trend|new|subs|updated] [--type scene|video|web] [--page N]
@@ -216,8 +220,7 @@ same switches and the hook:
 // ~/.config/we-linux/settings.json
 {
   "fps": 60,                 // frame rate cap
-  "video_gpu": false,        // decode scene videos on the GPU: less CPU, much more VRAM
-  "mirror": false,           // render once, show on every monitor (one pointer for all)
+  "video_gpu": false,        // decode scene videos on the GPU: less CPU, more video memory
   "audio": false,
   "volume": 50,
   "pause_fullscreen": true,  // Hyprland: freeze a monitor that shows a fullscreen window
@@ -233,7 +236,7 @@ same switches and the hook:
 | Changed properties of a wallpaper | `~/.config/we-linux/properties/<id>.json` |
 | The playlist and saved playlists | `~/.config/we-linux/playlist.json`, `playlists/` |
 | Preview and still caches | `~/.cache/we-linux/` |
-| The engine's log | `$XDG_RUNTIME_DIR/we-linux/all/engine.log` |
+| The renderer's log | `$XDG_RUNTIME_DIR/we-linux/engine.log` |
 
 ## Troubleshooting
 
@@ -244,13 +247,13 @@ Something does not work? Run `we-linux doctor` and read what it says is `NOT FOU
 |---|---|
 | The workshop tab says Steam does not answer | Start Steam and log in. Your account must own Wallpaper Engine. |
 | "libsteam_api.so was not found" | Install any native Linux game in Steam (a free one is fine) and open WE Linux again. |
-| A wallpaper is set but the desktop does not change | `we-linux status`. It prints the error: usually Wallpaper Engine itself is not installed in Steam (no `assets`), or `penguind` is not on the PATH. Then look at the engine's log. |
+| A wallpaper is set but the desktop does not change | `we-linux status`. It prints the error: usually Wallpaper Engine itself is not installed in Steam (no `assets`), or `wepaper` is not on the PATH. Then look at the renderer's log. |
 | The static wallpaper covers the live one | Hyprland: the daemon's layer rule did not take, add it by hand (above). Other compositors: start `we-linux daemon` after your wallpaper daemon. |
 | The wallpaper is gone after a reboot | Start `we-linux daemon` with your session (First run). |
 | The wallpaper freezes when a game starts | That is the fullscreen freeze, it goes on when the desktop is back. Turn it off in Settings to keep it running. |
 | "did not start: not enough video memory" | The scene does not fit your graphics card with what else is open. Close something heavy (a browser with video, a game) and set it again, or pick a lighter wallpaper: 4K scenes with many layers are the expensive ones. |
 | High CPU on a scene with a video | Lower the frame rate to 30, or switch video decoding to the GPU in Settings (costs video memory). |
-| A scene looks wrong | The renderer is young. Check it with stock [penguin-engine](https://github.com/ArjixWasTaken/penguin-engine) and report it there. |
+| A scene looks wrong | Run `wepaper check <the wallpaper's folder>`: it names what the renderer leaves out and why. Report it to [wepaper](https://github.com/MoonTiwzy/wepaper/issues) with that output. |
 
 ## How it works
 
@@ -261,14 +264,16 @@ flowchart LR
     C["we-linux apply / off"] -- writes --> F
     F --> D["we-linux daemon"]
     H["Hyprland events"] --> D
-    D -- runs --> P["penguind<br>one process, all monitors"]
+    D -- "tells over a socket" --> P["wepaper<br>one process, all monitors"]
     D -- still frame --> A["awww / swww / hyprpaper"]
     D -- hook --> X["your colours:<br>matugen, wal, wallust"]
 ```
 
-The window never draws a wallpaper. It writes what you picked to a file; the daemon reads it,
-runs the renderer, and restarts it when the wallpaper, the settings or the monitors change.
-The window itself renders in software: about 175 MB of RAM and no video memory.
+The window never draws a wallpaper. It writes what you picked to a file; the daemon reads it
+and tells the renderer over its socket: this wallpaper on that monitor, this property, that
+setting. The renderer keeps running through all of it; it starts once and stops when there is
+nothing to show. The window itself renders in software: about 175 MB of RAM and no video
+memory.
 
 ## Not there yet
 
@@ -277,9 +282,7 @@ The window itself renders in software: about 175 MB of RAM and no video memory.
 
 ## Credits
 
-- [penguin-engine](https://github.com/ArjixWasTaken/penguin-engine) by ArjixWasTaken: the
-  renderer. WE Linux runs [a fork of it](https://github.com/MoonTiwzy/penguin-engine) that
-  shares resources between monitors; it works with the stock one too, at the stock memory cost.
+- [wepaper](https://github.com/MoonTiwzy/wepaper): the renderer.
 - [Slint](https://slint.dev) for the interface.
 - [awww](https://codeberg.org/LGFae/awww), swww and hyprpaper, which it plays nicely with.
 
