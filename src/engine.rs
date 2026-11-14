@@ -1260,6 +1260,17 @@ pub fn run_daemon() {
                         if broken.contains_key(&key) {
                             continue;
                         }
+                        // The monitor's look first: a wallpaper turned down to nothing
+                        // must not be heard for the moment between showing it and
+                        // being told how loud it is.
+                        let own = crate::props::own_names(&wallpaper);
+                        let mut values = properties_of(&wallpaper);
+                        values.retain(|name, _| !own.contains(name));
+                        for (key, value) in crate::props::look(&values) {
+                            let _ = call(
+                                json!({ "cmd": "set", "path": format!("outputs/{monitor}/look/{key}"), "value": value }),
+                            );
+                        }
                         let request = json!({ "cmd": "show", "wallpaper": wallpaper, "output": monitor, "properties": properties(&wallpaper) });
                         match call(request) {
                             Ok(_) => {
@@ -1272,14 +1283,6 @@ pub fn run_daemon() {
                                 let _ = call(
                                     json!({ "cmd": "set", "path": format!("outputs/{monitor}/fill"), "value": fill }),
                                 );
-                                let own = crate::props::own_names(&wallpaper);
-                                let mut values = properties_of(&wallpaper);
-                                values.retain(|name, _| !own.contains(name));
-                                for (key, value) in crate::props::look(&values) {
-                                    let _ = call(
-                                        json!({ "cmd": "set", "path": format!("outputs/{monitor}/look/{key}"), "value": value }),
-                                    );
-                                }
                             }
                             Err(_) if SILENT.get() => loading = Some(key),
                             Err(why) => {
