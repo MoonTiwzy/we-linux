@@ -74,7 +74,9 @@ Fedora and Debian. The whole build takes about two minutes.
 
 Web wallpapers are a plugin of the renderer (`wepaper-web`), built when GTK 4, WebKitGTK 6 and
 gtk4-layer-shell are installed; `./install.sh --no-web` leaves it out.
-`./install.sh --engine` rebuilds the renderer too, for an update.
+The renderer is the commit `flake.lock` names, the same one the Nix package is built with: a
+pull that moves the pin rebuilds it on the next `./install.sh`, and one that does not leaves it
+alone. `./install.sh --engine` rebuilds it whatever is installed.
 
 ### NixOS
 
@@ -111,8 +113,8 @@ Home Manager works the same way: `we-linux.homeManagerModules.default` and
 `nix flake check` boots a NixOS VM, starts a compositor in it and opens the window. Two things
 on NixOS to know:
 
-- The package was moved to the new renderer together with everything else and has not been
-  built on a NixOS machine since. If it does not build for you, say so in an issue.
+- The package is built, and the VM test run, on every push (see the CI). If it does not
+  build for you all the same, say so in an issue.
 - The workshop tabs load Valve's `libsteam_api.so` from one of your games. The package puts
   `libstdc++` on its library path for it; if the workshop still says Steam does not answer, run
   WE Linux through `steam-run we-linux` and tell us in an issue.
