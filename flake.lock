@@ -29,11 +29,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1794635233,
-        "narHash": "sha256-MQpW5tx9ImQw/FYQM7lFY1/MrMN0Mqs+Dy2AIS5Sn7s=",
+        "lastModified": 1794637221,
+        "narHash": "sha256-wKtwUZFv2+oM/h4ZnVmBVrAyw2jzV5/EgNHHzTqqFrM=",
         "owner": "MoonTiwzy",
         "repo": "wepaper",
-        "rev": "7ee305a74d4b602e220b32d6169a10c52b69e304",
+        "rev": "97521bd549242f1b6f57b9936b27a108278c2ed9",
         "type": "github"
       },
       "original": {
