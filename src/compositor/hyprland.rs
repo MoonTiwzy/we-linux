@@ -129,10 +129,11 @@ fn change_of(line: &str) -> Option<Change> {
     }
 }
 
-/// `hyprctl hyprpaper listactive`: "DP-1 = /a/b.png" a line.
+/// `hyprctl hyprpaper listactive`: a monitor and its picture a line, as
+/// "DP-1 = /a/b.png" in older hyprpaper and "DP-1: /a/b.png" from 0.8 on.
 fn hyprpaper_pictures(text: &str) -> Vec<(String, PathBuf)> {
     text.lines()
-        .filter_map(|line| line.split_once(" = "))
+        .filter_map(|line| line.split_once(" = ").or_else(|| line.split_once(": ")))
         .filter(|(_, image)| image.trim().starts_with('/'))
         .map(|(monitor, image)| (monitor.trim().to_owned(), PathBuf::from(image.trim())))
         .collect()
@@ -308,6 +309,15 @@ mod tests {
         assert_eq!(
             hyprpaper_pictures("DP-1 = /a/b.png\nHDMI-A-1 = /c d.jpg\nnothing here"),
             vec![("DP-1".into(), PathBuf::from("/a/b.png")), ("HDMI-A-1".into(), PathBuf::from("/c d.jpg"))]
+        );
+    }
+
+    #[test]
+    fn newer_hyprpaper_says_monitor_colon_picture() {
+        // As 0.8.5 answered.
+        assert_eq!(
+            hyprpaper_pictures("WAYLAND-1: /home/u/pictures/green.png\n"),
+            vec![("WAYLAND-1".into(), PathBuf::from("/home/u/pictures/green.png"))]
         );
     }
 }
