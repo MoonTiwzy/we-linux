@@ -9,27 +9,48 @@ use crate::steam::Reply;
 use crate::tf;
 use crate::units::megabytes;
 
+/// What a list of the workshop says in place of its wallpapers while there
+/// is no Steam: why, and that nothing needs doing here once it is fixed.
+pub(super) fn offline(why: &str) -> String {
+    tf!(
+        "{why}. The list loads by itself once Steam is there.",
+        "{why}. Список загрузится сам, когда Steam будет на месте."
+    )
+}
+
 impl App {
     pub(super) fn steam_reply(&mut self, reply: Reply) {
         match reply {
-            Reply::Session(result) => {
-                self.catalog.set_steam_ok(result.is_ok());
+            Reply::Session(Ok(())) => {
+                let was_missing = self.catalog.set_steam_ok(true);
                 if let Some(ui) = self.ui() {
-                    ui.set_steam_ok(self.catalog.steam_ok());
-                    if let Err(e) = result
-                        && self.browse.online()
-                        && self.grid.cards().is_empty()
-                    {
-                        ui.set_loading(false);
-                        ui.set_error(
-                            tf!(
-                                "{e}. Start Steam: the list will load by itself.",
-                                "{e}. Запусти Steam: список загрузится сам."
-                            )
-                            .into(),
-                        );
+                    ui.set_steam_ok(true);
+                }
+                // Steam came back: what could not be listed without it is
+                // asked for again.
+                if was_missing {
+                    self.status(t(
+                        "Steam is back: the workshop works again",
+                        "Steam снова на месте: мастерская работает",
+                    ));
+                    if self.browse.online() {
+                        self.reload();
                     }
                 }
+            }
+            Reply::Session(Err(why)) => {
+                self.catalog.set_steam_ok(false);
+                if let Some(ui) = self.ui() {
+                    ui.set_steam_ok(false);
+                    if self.browse.online() && self.grid.cards().is_empty() {
+                        ui.set_loading(false);
+                        ui.set_error(offline(&why).into());
+                    }
+                }
+                self.warn(tf!(
+                    "{why}. The workshop comes back by itself with Steam; installed wallpapers work as usual.",
+                    "{why}. Мастерская вернётся сама вместе со Steam; установленные обои работают как обычно."
+                ));
             }
             Reply::Page { generation, result } => self.page_arrived(generation, result),
             Reply::Details(entries) => {
@@ -45,9 +66,30 @@ impl App {
                 }
             }
             Reply::Vote { id, vote } => {
-                self.catalog.set_vote(id, vote);
+                self.catalog.set_vote(id, vote.sign());
                 self.show_selection(true);
             }
+            Reply::Voted { id, result } => match result {
+                Ok(vote) => {
+                    self.catalog.set_vote(id, vote.sign());
+                    self.show_selection(true);
+                }
+                Err(why) => {
+                    self.warn(tf!("Steam did not take the vote: {why}", "Steam не принял оценку: {why}"))
+                }
+            },
+            Reply::Favorite { id, on, result: Err(why) } => {
+                // The heart was turned at once; Steam would not, so it goes back.
+                self.catalog.set_favorite(id, !on);
+                self.save();
+                self.refresh_marks();
+                self.show_selection(true);
+                self.warn(tf!(
+                    "Steam did not change the favourites: {why}",
+                    "Steam не изменил избранное: {why}"
+                ));
+            }
+            Reply::Favorite { result: Ok(()), .. } => {}
             Reply::Persona { id, persona } => {
                 let avatar = persona.avatar.map(|(w, h, rgba)| image_of(&rgba, w, h));
                 self.catalog.add_persona(id, persona.name, avatar);
@@ -59,24 +101,29 @@ impl App {
                     ui.set_notice(tf!("Browsing wallpapers by {name}", "Смотрим все обои от {name}").into());
                 }
             }
-            Reply::Subscribed { id, ok } => {
-                self.catalog.subscribed(id, ok);
-                if ok {
-                    self.status(t(
+            Reply::Subscribed { id, result } => {
+                self.catalog.subscribed(id, result.is_ok());
+                match result {
+                    Ok(()) => self.status(t(
                         "Subscribed, Steam is downloading the wallpaper",
                         "Подписка оформлена, Steam загружает обои",
-                    ));
-                } else {
-                    self.status(t("Steam did not take the subscription", "Steam не принял подписку"));
+                    )),
+                    Err(why) => self.warn(tf!(
+                        "Steam did not take the subscription: {why}",
+                        "Steam не принял подписку: {why}"
+                    )),
                 }
                 self.refresh_marks();
+                self.show_selection(true);
             }
-            Reply::Unsubscribed { id, ok } => {
-                self.catalog.unsubscribed(id, ok);
-                if ok {
-                    self.forget(id);
-                } else {
-                    self.status(t("Steam did not remove the subscription", "Steam не снял подписку"));
+            Reply::Unsubscribed { id, result } => {
+                self.catalog.unsubscribed(id, result.is_ok());
+                match result {
+                    Ok(()) => self.forget(id),
+                    Err(why) => self.warn(tf!(
+                        "Steam did not remove the subscription: {why}",
+                        "Steam не снял подписку: {why}"
+                    )),
                 }
                 self.refresh_marks();
             }
@@ -98,20 +145,20 @@ impl App {
                     self.apply();
                 }
             }
-            Reply::Progress { id, state, done, total } => {
+            Reply::Progress { id, progress } => {
                 let was_installed = self.catalog.dir_of(id).is_some();
-                if self.catalog.downloading(id, state, done, total) {
+                if self.catalog.downloading(id, progress) {
                     self.status(t("The wallpaper is downloaded", "Обои загружены"));
                     // It is among the installed ones from now on.
                     if self.browse.tab() == INSTALLED && !was_installed {
                         self.show_installed();
                     }
-                } else if total > 0 {
+                } else if progress.total > 0 {
                     self.status(tf!(
                         "Steam is downloading: {} of {}",
                         "Steam загружает обои: {} из {}",
-                        megabytes(done),
-                        megabytes(total)
+                        megabytes(progress.done),
+                        megabytes(progress.total)
                     ));
                 }
                 self.refresh_marks();

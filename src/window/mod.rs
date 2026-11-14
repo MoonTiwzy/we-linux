@@ -110,6 +110,14 @@ impl App {
         }
     }
 
+    /// The line at the top left, in the colour of what went wrong.
+    fn warn(&self, text: impl Into<SharedString>) {
+        if let Some(ui) = self.ui() {
+            ui.set_status(text.into());
+            ui.set_status_error(true);
+        }
+    }
+
     /// `done` when it worked, why not when it did not.
     fn report(&self, result: Result<(), String>, done: &str) {
         match result {

@@ -23,7 +23,16 @@ impl App {
             return;
         };
         if self.catalog.start(card.id) {
-            self.status(tf!("Subscribing to \"{}\"…", "Подписка на «{}»…", card.title));
+            if self.catalog.steam_ok() {
+                self.status(tf!("Subscribing to \"{}\"…", "Подписка на «{}»…", card.title));
+            } else {
+                // The thread keeps it until Steam is there.
+                self.warn(tf!(
+                    "Steam is not there: \"{}\" is subscribed to as soon as it is",
+                    "Steam недоступен: подписка на «{}» оформится, как только он появится",
+                    card.title
+                ));
+            }
             let _ = self.steam.send(Command::Subscribe(card.id));
             self.catalog.set_when_ready(card.id);
             self.show_selection(true);

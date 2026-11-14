@@ -12,15 +12,16 @@ use slint::Image;
 use super::card::Card;
 use super::listing;
 use crate::library::{self, Installed};
-use crate::{selection, steam};
+use crate::selection;
+use crate::steam::{self, ItemState, Progress};
 
 pub(super) struct Catalog {
     installed: Vec<Installed>,
     /// Unsubscribed from in this run: not shown as installed even while
     /// Steam still lists it.
     gone: HashSet<u64>,
-    /// `EItemState` by id, as Steam last told.
-    subscribed: HashMap<u64, u32>,
+    /// Items' states by id, as Steam last told.
+    subscribed: HashMap<u64, ItemState>,
     progress: HashMap<u64, f32>,
     /// Asked of Steam (subscribing, unsubscribing) and not answered yet.
     busy: HashSet<u64>,
@@ -41,6 +42,8 @@ pub(super) struct Catalog {
     sizes: HashMap<u64, u64>,
     /// Steam is there to be asked.
     steam_ok: bool,
+    /// Steam said it was not there, and has not come back since.
+    steam_missing: bool,
 }
 
 /// What a folder takes on the disk, its files counted.
@@ -75,6 +78,7 @@ impl Catalog {
             votes: HashMap::new(),
             sizes: HashMap::new(),
             steam_ok: false,
+            steam_missing: false,
         }
     }
 
@@ -150,17 +154,22 @@ impl Catalog {
         self.steam_ok
     }
 
-    pub(super) fn set_steam_ok(&mut self, ok: bool) {
+    /// Whether Steam is there now. Returns whether it had been missing:
+    /// true when it comes back, not when it is there from the start.
+    pub(super) fn set_steam_ok(&mut self, ok: bool) -> bool {
+        let was_missing = self.steam_missing;
         self.steam_ok = ok;
+        self.steam_missing = !ok;
+        was_missing && ok
     }
 
-    /// `EItemState`, 0 when Steam said nothing of it.
-    pub(super) fn state(&self, id: u64) -> u32 {
-        self.subscribed.get(&id).copied().unwrap_or(0)
+    /// Its state, none when Steam said nothing of it.
+    pub(super) fn state(&self, id: u64) -> ItemState {
+        self.subscribed.get(&id).copied().unwrap_or_default()
     }
 
     pub(super) fn is_subscribed(&self, id: u64) -> bool {
-        self.state(id) & steam::SUBSCRIBED != 0
+        self.state(id).subscribed()
     }
 
     /// How far its download is, -1 when none is watched.
@@ -204,7 +213,8 @@ impl Catalog {
     pub(super) fn subscribed(&mut self, id: u64, ok: bool) {
         self.busy.remove(&id);
         if ok {
-            *self.subscribed.entry(id).or_insert(0) |= steam::SUBSCRIBED;
+            let state = self.subscribed.entry(id).or_default();
+            *state = state.with(ItemState::SUBSCRIBED);
             self.progress.insert(id, 0.0);
         } else {
             self.progress.remove(&id);
@@ -224,7 +234,7 @@ impl Catalog {
 
     /// Every subscription, as Steam lists them; the disk read again. Returns
     /// whether what is installed changed.
-    pub(super) fn subscriptions(&mut self, list: Vec<(u64, u32)>) -> bool {
+    pub(super) fn subscriptions(&mut self, list: Vec<(u64, ItemState)>) -> bool {
         self.subscribed = list.into_iter().collect();
         let on_disk = self.on_disk();
         let ids = |list: &[Installed]| list.iter().map(|i| i.id).collect::<HashSet<u64>>();
@@ -235,9 +245,9 @@ impl Catalog {
 
     /// A download moved on: its state now, and how much of it is here.
     /// Returns whether it is finished.
-    pub(super) fn downloading(&mut self, id: u64, state: u32, done: u64, total: u64) -> bool {
+    pub(super) fn downloading(&mut self, id: u64, Progress { state, done, total }: Progress) -> bool {
         self.subscribed.insert(id, state);
-        let finished = state & steam::INSTALLED != 0 && state & (steam::DOWNLOADING | steam::PENDING) == 0;
+        let finished = state.finished();
         if finished {
             self.progress.remove(&id);
             self.gone.remove(&id);
@@ -352,5 +362,36 @@ impl Catalog {
             size: self.sizes.get(&card.id).copied().unwrap_or(0),
             updated: info.map_or(card.updated, |e| u64::from(e.updated)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn steam_counts_as_back_only_after_it_was_missing() {
+        let mut catalog = Catalog::from_disk();
+        // There from the start: nothing to ask again.
+        assert!(!catalog.set_steam_ok(true));
+        assert!(!catalog.set_steam_ok(false));
+        assert!(!catalog.steam_ok());
+        assert!(catalog.set_steam_ok(true));
+        assert!(!catalog.set_steam_ok(true));
+    }
+
+    #[test]
+    fn a_refused_subscription_is_no_longer_busy_or_downloading() {
+        let mut catalog = Catalog::from_disk();
+        assert!(catalog.start(5));
+        assert!(!catalog.start(5));
+        catalog.subscribed(5, false);
+        assert!(!catalog.is_busy(5) && !catalog.is_subscribed(5) && !catalog.is_downloading(5));
+        assert!(catalog.start(6));
+        catalog.subscribed(6, true);
+        assert!(catalog.is_subscribed(6) && catalog.is_downloading(6));
+        let done = ItemState::SUBSCRIBED.with(ItemState::INSTALLED);
+        assert!(catalog.downloading(6, Progress { state: done, done: 9, total: 9 }));
+        assert!(!catalog.is_downloading(6));
     }
 }
