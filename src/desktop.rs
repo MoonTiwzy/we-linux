@@ -90,7 +90,7 @@ pub fn resolve(target: &str) -> Result<PathBuf, String> {
 
 /// Set a wallpaper folder, a video or a picture as the wallpaper of every
 /// monitor. A picture is not ours to play: the engine stops and awww, swww
-/// or hyprpaper (whichever runs) shows it.
+/// or the desktop's own wallpaper program shows it.
 pub fn apply(path: &Path) -> Result<(), String> {
     let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     let mut desktop = Desktop::load();
@@ -111,7 +111,7 @@ pub fn apply(path: &Path) -> Result<(), String> {
         return if engine::show_image(path) {
             Ok(())
         } else {
-            Err("no awww, swww or hyprpaper to show a picture".into())
+            Err("no awww, swww or wallpaper program of the desktop's own to show a picture".into())
         };
     } else {
         return Err(format!("{}: not a wallpaper folder, a video or a picture", path.display()));
@@ -128,8 +128,8 @@ pub fn apply_to(output: &str, path: &Path) -> Result<(), String> {
         let names = monitors.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(", ");
         return Err(if names.is_empty() {
             crate::lang::t(
-                "the monitors are not known yet: they are once a wallpaper is on the desktop (or on Hyprland)",
-                "мониторы пока не известны: они появятся, когда на столе будут обои (или в Hyprland)",
+                "the monitors are not known yet: the compositor does not list them, and they are known once a wallpaper is on the desktop",
+                "мониторы пока не известны: композитор их не перечисляет, а известны они станут, когда на столе будут обои",
             )
             .to_owned()
         } else {
@@ -253,37 +253,21 @@ pub struct Monitor {
 }
 
 pub fn monitors() -> Vec<Monitor> {
-    let hyprland = Command::new("hyprctl")
-        .args(["monitors", "-j"])
-        .output()
-        .ok()
-        .and_then(|out| serde_json::from_slice::<serde_json::Value>(&out.stdout).ok());
-    if let Some(list) = hyprland.as_ref().and_then(|json| json.as_array()) {
-        return list
-            .iter()
-            .map(|m| {
-                let number = |key: &str| m[key].as_f64().unwrap_or(0.0) as f32;
-                let scale = if number("scale") > 0.0 { number("scale") } else { 1.0 };
-                // A monitor turned on its side is as wide as it is tall.
-                let turned = m["transform"].as_i64().unwrap_or(0) % 2 == 1;
-                let (width, height) = if turned {
-                    (number("height"), number("width"))
-                } else {
-                    (number("width"), number("height"))
-                };
-                Monitor {
-                    name: m["name"].as_str().unwrap_or("").to_owned(),
-                    detail: format!("{}x{}", width as i64, height as i64),
-                    x: number("x"),
-                    y: number("y"),
-                    width: width / scale,
-                    height: height / scale,
-                }
+    if let Some(monitors) = crate::compositor::current().monitors().filter(|m| !m.is_empty()) {
+        return monitors
+            .into_iter()
+            .map(|m| Monitor {
+                detail: format!("{}x{}", m.pixels.0, m.pixels.1),
+                name: m.name,
+                x: m.x,
+                y: m.y,
+                width: m.width,
+                height: m.height,
             })
             .collect();
     }
-    // Not Hyprland: the renderer knows the monitors it draws on, not where they
-    // stand; they are put side by side.
+    // The compositor does not say: the renderer knows the monitors it draws
+    // on, not where they stand; they are put side by side.
     let mut x = 0.0;
     engine::outputs()
         .into_iter()
@@ -351,7 +335,10 @@ pub fn autostart() -> bool {
 }
 
 /// Have systemd start the daemon with the graphical session, or no longer.
-pub fn set_autostart(on: bool) -> Result<(), String> {
+/// A session that does not start graphical-session.target (a compositor
+/// started by hand, without a session manager) starts no such service: then
+/// the answer is the line of the compositor's config that does it.
+pub fn set_autostart(on: bool) -> Result<Option<String>, String> {
     let run = |args: &[&str]| {
         let status = Command::new("systemctl")
             .arg("--user")
@@ -367,7 +354,7 @@ pub fn set_autostart(on: bool) -> Result<(), String> {
         }
     };
     if !on {
-        return run(&["disable", UNIT]);
+        return run(&["disable", UNIT]).map(|()| None);
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let unit = format!(
@@ -381,7 +368,12 @@ pub fn set_autostart(on: bool) -> Result<(), String> {
     }
     std::fs::write(&file, unit).map_err(|e| e.to_string())?;
     run(&["daemon-reload"])?;
-    run(&["enable", UNIT])
+    run(&["enable", UNIT])?;
+    Ok(if crate::compositor::session_target() {
+        None
+    } else {
+        Some(crate::compositor::current().autostart_line().unwrap_or_else(|| "we-linux daemon".to_owned()))
+    })
 }
 
 pub fn settings_file() -> PathBuf {
@@ -399,7 +391,8 @@ pub struct Settings {
     pub volume: i32,
     /// What a wallpaper does while another application is focused on its
     /// monitor, maximised over it, fullscreen on it, while another application
-    /// plays sound, and while its monitor sleeps (Hyprland, but the sound):
+    /// plays sound, and while its monitor sleeps (as the compositor tells; the
+    /// sound as the sound server does):
     /// "run", "mute", "pause" (that monitor), "pauseall" (every monitor) or
     /// "stop" (the renderer goes once every monitor stops, and the video
     /// memory with it). The original's "Воспроизведение".
@@ -410,7 +403,7 @@ pub struct Settings {
     pub playback_sleep: String,
     /// Textures no larger than 2048 pixels a side.
     pub texture_half: bool,
-    /// Give awww, swww or hyprpaper a still of the wallpaper.
+    /// Give awww, swww or the desktop's own wallpaper program a still of the wallpaper.
     pub still: bool,
     /// A shell command run when the wallpaper changes, with WE_LINUX_WALLPAPER,
     /// WE_LINUX_STILL and WE_LINUX_TITLE in its environment.

@@ -13,6 +13,7 @@
 //! `off` and `status` are the command line (cli.rs).
 
 mod cli;
+mod compositor;
 mod desktop;
 mod engine;
 mod lang;

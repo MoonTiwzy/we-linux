@@ -30,6 +30,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = "3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+# What a compositor without an IPC of its own says about windows and monitors
+# (wlr-foreign-toplevel, xdg-output, wlr-output-power), and KWin's D-Bus. All of them,
+# with these features, are built for the window's toolkit already: they add no crate.
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
 
 [profile.release]
 strip = true

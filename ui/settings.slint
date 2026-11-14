@@ -27,6 +27,12 @@ export struct SettingsValues {
     audio: bool,
     volume: int,
     video-gpu: bool,
+    /// What the compositor can say of what covers a monitor: a choice about
+    /// what it cannot say does nothing there.
+    tells-focus: bool,
+    tells-maximized: bool,
+    tells-fullscreen: bool,
+    tells-sleep: bool,
 }
 
 export struct PluginEntry {
@@ -119,6 +125,7 @@ export component SettingsView inherits Rectangle {
     in property <string> cache-size;
 
     property <string> not-here: L.t("Not available on Linux.", "На Linux этого нет.");
+    property <string> unheard: L.t("This compositor does not say it: here the choice does nothing.", "Этот композитор об этом не сообщает: здесь выбор ничего не делает.");
     property <string> not-drawn: L.t("The renderer does not draw 3D scenes, so this has nothing to change.", "Рендерер не рисует 3D-сцены, поэтому менять тут нечего.");
     /// The choices of a row of "Воспроизведение", as the original lists them.
     pure function choices(mute: bool, several: bool, stop: bool) -> [string] {
@@ -232,7 +239,7 @@ export component SettingsView inherits Rectangle {
                     icon: Icons.play;
                     Row {
                         label: L.t("Other application focused:", "Другое приложение выбрано:");
-                        hint: L.t("Hyprland: a window has the focus on the monitor.", "Hyprland: на мониторе окно в фокусе.");
+                        hint: L.t("A window has the focus on the monitor.", "На мониторе окно в фокусе.") + (root.values.tells-focus ? "" : " " + root.unheard);
                         Pick {
                             options: root.choices(true, root.values.several, false);
                             index: root.values.focus;
@@ -241,7 +248,7 @@ export component SettingsView inherits Rectangle {
                     }
                     Row {
                         label: L.t("Other application maximized:", "Другое приложение развёрнуто:");
-                        hint: L.t("Hyprland: a window maximised over the monitor.", "Hyprland: окно, развёрнутое на монитор.");
+                        hint: L.t("A window maximised over the monitor (on a tiling compositor, any window that fills it).", "Окно, развёрнутое на монитор (в тайловом композиторе любое окно, которое его заполняет).") + (root.values.tells-maximized ? "" : " " + root.unheard);
                         Pick {
                             options: root.choices(true, root.values.several, true);
                             index: root.values.maximized;
@@ -250,7 +257,7 @@ export component SettingsView inherits Rectangle {
                     }
                     Row {
                         label: L.t("Other application fullscreen:", "Другое приложение в полный экран:");
-                        hint: L.t("Hyprland. Paused, the monitor keeps the wallpaper's last frame and does no work. Stopped, the renderer goes when every monitor is covered, and the video memory with it; the scene starts over afterwards.", "Hyprland. На паузе монитор держит последний кадр обоев и ничего не считает. При остановке рендерер выгружается, когда закрыты все мониторы, и видеопамять освобождается; потом сцена начинается заново.");
+                        hint: L.t("Paused, the monitor keeps the wallpaper's last frame and does no work. Stopped, the renderer goes when every monitor is covered, and the video memory with it; the scene starts over afterwards.", "На паузе монитор держит последний кадр обоев и ничего не считает. При остановке рендерер выгружается, когда закрыты все мониторы, и видеопамять освобождается; потом сцена начинается заново.") + (root.values.tells-fullscreen ? "" : " " + root.unheard);
                         Pick {
                             options: root.choices(true, root.values.several, true);
                             index: root.values.fullscreen;
@@ -268,7 +275,7 @@ export component SettingsView inherits Rectangle {
                     }
                     Row {
                         label: L.t("Display asleep:", "Монитор в спящем режиме:");
-                        hint: L.t("Hyprland: the monitor's power is off (DPMS).", "Hyprland: питание монитора выключено (DPMS).");
+                        hint: L.t("The monitor's power is off (DPMS).", "Питание монитора выключено (DPMS).") + (root.values.tells-sleep ? "" : " " + root.unheard);
                         Pick {
                             options: root.choices(false, false, true);
                             index: root.values.sleep;
@@ -384,7 +391,7 @@ export component SettingsView inherits Rectangle {
                     icon: Icons.star;
                     Row {
                         label: L.t("Start with the session:", "Запускать с сеансом:");
-                        hint: L.t("Keeps the wallpaper on the desktop from login: a systemd user service that runs `we-linux daemon`.", "Держит обои на рабочем столе с самого входа: пользовательская служба systemd, которая запускает `we-linux daemon`.");
+                        hint: L.t("Keeps the wallpaper on the desktop from login: a systemd user service that runs `we-linux daemon` with the graphical session. A session that does not start one gets the line for its compositor's config.", "Держит обои на рабочем столе с самого входа: пользовательская служба systemd, которая запускает `we-linux daemon` вместе с графическим сеансом. Для сеанса, который служб не запускает, будет строка для конфига его композитора.");
                         Tick {
                             checked: root.values.autostart;
                             toggled => { root.values.autostart = !root.values.autostart; }
@@ -437,8 +444,8 @@ export component SettingsView inherits Rectangle {
                     title: "Linux";
                     icon: Icons.linux;
                     Row {
-                        label: L.t("Still frame for awww, swww or hyprpaper:", "Стоп-кадр для awww, swww или hyprpaper:");
-                        hint: L.t("Gives your static wallpaper program a frame of the live wallpaper, so the desktop shows it before the renderer starts and while it is stopped.", "Отдаёт программе статичных обоев кадр живых обоев: рабочий стол показывает его, пока рендерер не запустился и пока он остановлен.");
+                        label: L.t("Still frame for the static wallpaper:", "Стоп-кадр для статичных обоев:");
+                        hint: L.t("Gives your static wallpaper program (awww, swww, or the desktop's own) a frame of the live wallpaper, so the desktop shows it before the renderer starts and while it is stopped.", "Отдаёт программе статичных обоев (awww, swww или собственной программе рабочего стола) кадр живых обоев: рабочий стол показывает его, пока рендерер не запустился и пока он остановлен.");
                         Tick {
                             checked: root.values.still;
                             toggled => { root.values.still = !root.values.still; }

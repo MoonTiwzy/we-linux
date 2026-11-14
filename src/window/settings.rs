@@ -125,6 +125,7 @@ impl App {
         let settings = Settings::load();
         ui.set_cache_size(megabytes(engine::cache_size()).into());
         let multi = desktop::monitors().len() > 1;
+        let tells = crate::compositor::current().tells();
         let index = |row: Row, value: &str| {
             playback_choices(row, multi).iter().position(|c| *c == value).unwrap_or(0) as i32
         };
@@ -143,6 +144,10 @@ impl App {
             audio: settings.audio,
             volume: settings.volume,
             video_gpu: settings.video_gpu,
+            tells_focus: tells.focus,
+            tells_maximized: tells.maximized,
+            tells_fullscreen: tells.fullscreen,
+            tells_sleep: tells.sleep,
         });
         let plugins: Vec<PluginEntry> = engine::plugins()
             .into_iter()
@@ -163,10 +168,18 @@ impl App {
         if (values.language == 1) != lang::russian() {
             self.set_language(values.language == 1);
         }
-        if values.autostart != desktop::autostart()
-            && let Err(e) = desktop::set_autostart(values.autostart)
-        {
-            self.status(tf!("That did not work: {e}", "Не получилось: {e}"));
+        // What the user has to do for the autostart, said last: nothing says it over.
+        let mut autostart = None;
+        if values.autostart != desktop::autostart() {
+            autostart = match desktop::set_autostart(values.autostart) {
+                Err(e) => Some(tf!("That did not work: {e}", "Не получилось: {e}")),
+                // The session starts no systemd services: the compositor's config does it.
+                Ok(Some(line)) => Some(tf!(
+                    "This session does not start services: add to your compositor's config: {line}",
+                    "Эта сессия не запускает службы: добавьте в конфиг композитора: {line}"
+                )),
+                Ok(None) => None,
+            };
         }
         let multi = values.several;
         let choice = |row: Row, index: i32| {
@@ -186,12 +199,14 @@ impl App {
             still: values.still,
             ..Settings::load()
         };
-        if settings == Settings::load() {
-            return;
+        if settings != Settings::load() {
+            let result = settings.save().and_then(|()| engine::ensure_daemon());
+            self.report(result, t("Settings applied", "Настройки применены"));
+            self.show_monitors();
         }
-        let result = settings.save().and_then(|()| engine::ensure_daemon());
-        self.report(result, t("Settings applied", "Настройки применены"));
-        self.show_monitors();
+        if let Some(note) = autostart {
+            self.status(note);
+        }
     }
 
     /// "Очистить кэш".

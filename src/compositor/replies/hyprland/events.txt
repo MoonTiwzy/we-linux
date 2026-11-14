@@ -1,0 +1,18 @@
+fullscreen>>1
+fullscreen>>0
+fullscreen>>1
+fullscreen>>0
+createworkspace>>2
+createworkspacev2>>2,2
+activewindow>>,
+activewindowv2>>
+workspace>>2
+workspacev2>>2,2
+activewindow>>we-test,user@host:~/projects/desktop/we-linux
+activewindowv2>>55c4a571d0a0
+workspace>>1
+workspacev2>>1,1
+destroyworkspace>>2
+destroyworkspacev2>>2,2
+configreloaded>>
+2026/11/14 11:01:32 socat[2574812] W exiting on signal 15

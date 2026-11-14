@@ -10,9 +10,9 @@
 ![Rust](https://img.shields.io/badge/rust-2024-e6522c?logo=rust&logoColor=white)
 ![Wayland](https://img.shields.io/badge/wayland-native-ffbc00)
 [![NixOS](https://img.shields.io/badge/NixOS-flake-5277c3?logo=nixos&logoColor=white)](#nixos)
-![Hyprland](https://img.shields.io/badge/Hyprland-first%20class-58e1ff)
+![Wayland](https://img.shields.io/badge/Wayland-Hyprland%20%C2%B7%20Sway%20%C2%B7%20niri%20%C2%B7%20KDE-58e1ff)
 
-[Install](#install) · [First run](#first-run) · [Hyprland](#hyprland) · [Command line](#command-line) · [Troubleshooting](#troubleshooting) · [Русский](README.ru.md)
+[Install](#install) · [First run](#first-run) · [Compositors](#compositors) · [Command line](#command-line) · [Troubleshooting](#troubleshooting) · [Русский](README.ru.md)
 
 <img src="assets/screenshot.jpg" alt="The workshop tab: search, filters, previews, the selected wallpaper on the right">
 
@@ -52,8 +52,9 @@ changes it later.
 - **Steam running**, for the workshop tabs. The library and your wallpapers work without it.
 - **One native Linux game installed in Steam** (any free one will do). Every native game
   carries Valve's `libsteam_api.so`; WE Linux finds it by itself and keeps a copy.
-- **Wayland** with layer-shell. Hyprland is what it is developed and tested on; Sway, niri,
-  river and KDE Plasma have the protocol it needs.
+- **Wayland** with layer-shell. Hyprland, Sway, niri and KDE Plasma are each asked through their
+  own interface; other compositors through the wlroots protocols they have (see
+  [Compositors](#compositors)).
 - OpenGL 3.3, and at run time `libmpv` (video and sound) and `ffmpeg` (cheaper copies of
   oversized videos).
 
@@ -127,35 +128,75 @@ on NixOS to know:
 
 To have the wallpaper come back after a login, start the daemon with your session:
 
+The switch in Settings ("Start with the session") installs a systemd user service. It starts with
+any session that starts `graphical-session.target`: KDE Plasma, niri through `niri-session`,
+Hyprland and Sway through UWSM. In a session that does not (a compositor started by hand),
+the switch says so and names the line for your config instead:
+
 | Compositor | Add this |
 |---|---|
-| Hyprland | `exec-once = we-linux daemon` |
+| Hyprland, Lua config | `hl.on("hyprland.start", function() hl.exec_cmd("we-linux daemon") end)` |
+| Hyprland, older config | `exec-once = we-linux daemon` |
 | Sway | `exec we-linux daemon` |
 | niri | `spawn-at-startup "we-linux" "daemon"` |
 | NixOS module | nothing, the systemd user service does it |
 
 You do not have to: the window and `we-linux apply` start the daemon when it is not running.
 
-## Hyprland
+## Compositors
 
-WE Linux sets Hyprland up by itself. Nothing below needs a line in your config, it is here so
-you know what happens.
+The daemon asks the compositor which monitors there are and what covers them, each through its
+own interface, and hears of changes as they happen. It picks the interface from the session
+when it starts; `WE_LINUX_COMPOSITOR=hyprland`, `sway`, `niri`, `kwin` or `wayland` picks one by
+hand.
 
-**With awww, swww or hyprpaper.** Keep them. The live wallpaper is drawn on the same background
-layer, and two programs on one layer are stacked in whatever order they started in, so a static
-wallpaper that starts later would cover the live one. The daemon gives the engine's layer a
-layer rule (`order -1`, fade in and out) so it stays on top either way, and hands your wallpaper
-daemon a still frame of the live wallpaper. So the desktop shows the same picture before the
-engine is up and while it is stopped. The picture you had before is remembered and comes back
-on `we-linux off`, when the daemon is stopped and when a wallpaper fails to load. Turn the
-still off with `"still": false` in the settings file if you want your own picture under it.
+| | Hyprland | Sway | niri | KDE Plasma | Others |
+|---|---|---|---|---|---|
+| Asked through | its two sockets | its IPC socket | its IPC socket | a KWin script of the daemon's, over D-Bus | wlr-foreign-toplevel, wlr-output-power |
+| Monitors, as they stand | yes | yes | yes | yes (xdg-output) | yes (xdg-output) |
+| Fullscreen window | yes | yes | yes: a window as large as the monitor | yes | with wlr-foreign-toplevel |
+| Maximised window | yes | any tiled window (it fills the screen), a floating one as large | a window nearly as large as the monitor | yes | with wlr-foreign-toplevel |
+| Window in focus | yes | yes | yes | yes | with wlr-foreign-toplevel |
+| Monitor asleep | yes, within three seconds | yes | no: niri does not say | not tried | with wlr-output-power |
+| Live wallpaper over a static one | a layer rule the daemon sets | start the daemon after your wallpaper program | start the daemon after your wallpaper program | on the layer above Plasma's desktop (not tried) | start the daemon after your wallpaper program |
+| Still frame for | awww, swww, hyprpaper | awww, swww, Sway's own background | awww, swww | awww, swww, Plasma's picture wallpaper (not tried) | awww, swww |
+
+Hyprland 0.57, Sway 1.12, niri 26.04 and KWin 6.8 were run, headless or nested, with the daemon
+in them, and the parsers are tested against their replies. "Not tried" is written from KDE's
+documentation: Plasma's own shell was not there to try it with. What the table says per
+compositor:
+
+- **Hyprland** sends no event when a monitor's power goes off: the daemon sees it on its next
+  look, within three seconds. Everything else it hears of at once.
+- **Sway** has no maximised windows: a tiled window fills its part of the screen and leaves no
+  desktop to see, so it counts as one. Sway restarts swaybg for a new background (`output * bg`,
+  the still frame) and on `swaymsg reload`, and the newest layer is on top: the daemon has the
+  renderer put its layer back on top both times.
+- **niri** says how large a window is, not whether it is fullscreen or maximised: a window the
+  size of the monitor counts as fullscreen (a window maximised to the edges with no bar too),
+  one at least nine tenths of it each way as maximised. Of a workspace's columns only the one in
+  view counts. niri says nothing of a monitor's power.
+- **KDE Plasma**: KWin lists no windows over D-Bus, so the daemon loads a small script into KWin
+  that tells it what covers each screen, and unloads it when it stops. Plasma's desktop is a
+  window under everything, and a wallpaper on the background layer would be under it; the
+  renderer goes on the layer above, which also puts it over the desktop's icons.
+- **Others** (river, labwc, Wayfire...) are asked through the wlroots protocols. A window on a
+  workspace that is not shown still counts there: the protocol does not say which workspace is.
+
+**With awww, swww or the desktop's own wallpaper program.** Keep them. The live wallpaper is
+drawn on the same background layer, and the daemon hands your wallpaper program a still frame of
+the live wallpaper, so the desktop shows the same picture before the engine is up and while it
+is stopped. The picture you had before is remembered and comes back on `we-linux off`, when the
+daemon is stopped and when a wallpaper fails to load. Turn the still off with `"still": false` in
+the settings file if you want your own picture under it.
 
 **Fullscreen.** A monitor that shows a fullscreen window (a game, a video) keeps the
 wallpaper's last frame and does no work; when the desktop is back, the wallpaper goes on from
 that frame. Other monitors keep playing. Settings, "Playback", has the original's choices for
 a fullscreen window, a maximised one, a focused one, another program's sound and a sleeping
 monitor: keep running, mute, pause (that monitor or all of them) or stop, which gives a game the
-video memory once every monitor is stopped (the scene starts over afterwards).
+video memory once every monitor is stopped (the scene starts over afterwards). A choice about
+what the compositor does not say does nothing, and its hint says so.
 
 **Colours from the wallpaper.** Set a hook and it runs on every wallpaper change with a still
 frame to take colours from:
@@ -170,7 +211,12 @@ it) and `WE_LINUX_TITLE`. What it prints goes to `$XDG_RUNTIME_DIR/we-linux/hook
 run's), not to the terminal the daemon was started from.
 
 <details>
-<summary>What the daemon runs for the layer rule</summary>
+<summary>The layer rule the daemon sets on Hyprland</summary>
+
+Hyprland stacks the layers of one level by their `order`, lower on top, and the daemon gives the
+renderer's layer `order -1` (a static wallpaper's is 0), so it stays on top whichever started
+last. It sets the rule again after every config reload, which forgets it. Over Hyprland's
+socket, as `hyprctl` would:
 
 ```sh
 # Lua config (Hyprland 0.55+)
@@ -205,7 +251,8 @@ we-linux apply ~/Videos/loop.mp4          # any video
 we-linux apply 3409533530 --output DP-2   # only on one monitor
 ```
 
-A picture is handed to awww, swww or hyprpaper, whichever runs (awww is the tested one).
+A picture is handed to awww or swww, whichever runs, else to the desktop's own wallpaper
+program (hyprpaper, Sway's background, Plasma's picture wallpaper).
 
 ## Settings
 
@@ -221,12 +268,12 @@ same switches and the hook:
   "audio": false,
   "volume": 50,
   // "Playback": "run", "mute", "pause" (that monitor), "pauseall" or "stop"
-  "playback_fullscreen": "pause",  // Hyprland: a fullscreen window on the monitor
-  "playback_maximized": "run",     // Hyprland: a window maximised over it
-  "playback_focus": "run",         // Hyprland: a window has the focus there
+  "playback_fullscreen": "pause",  // a fullscreen window on the monitor
+  "playback_maximized": "run",     // a window maximised over it
+  "playback_focus": "run",         // a window has the focus there
   "playback_audio": "run",         // another program plays sound (pactl)
-  "playback_sleep": "run",         // Hyprland: the monitor's power is off
-  "still": true,             // give awww/swww/hyprpaper a still of the wallpaper
+  "playback_sleep": "run",         // the monitor's power is off
+  "still": true,             // give the static wallpaper program a still of the wallpaper
   "hook": ""                 // a shell command run when the wallpaper changes
 }
 ```
@@ -250,7 +297,7 @@ Something does not work? Run `we-linux doctor` and read what it says is `NOT FOU
 | The workshop tab says Steam does not answer | Start Steam and log in. Your account must own Wallpaper Engine. |
 | "libsteam_api.so was not found" | Install any native Linux game in Steam (a free one is fine) and open WE Linux again. |
 | A wallpaper is set but the desktop does not change | `we-linux status`. It prints the error: usually Wallpaper Engine itself is not installed in Steam (no `assets`), or `wepaper` is not on the PATH. Then look at the renderer's log. |
-| The static wallpaper covers the live one | Hyprland: the daemon's layer rule did not take, add it by hand (above). Other compositors: start `we-linux daemon` after your wallpaper daemon. |
+| The static wallpaper covers the live one | Hyprland: the daemon's layer rule did not take, add it by hand (Compositors). Other compositors: start `we-linux daemon` after your wallpaper program. |
 | The wallpaper is gone after a reboot | Start `we-linux daemon` with your session (First run). |
 | The wallpaper freezes when a game starts | That is the fullscreen freeze, it goes on when the desktop is back. Turn it off in Settings to keep it running. |
 | "did not start: not enough video memory" | The scene does not fit your graphics card with what else is open. Close something heavy (a browser with video, a game) and set it again, or pick a lighter wallpaper: 4K scenes with many layers are the expensive ones. |
@@ -265,9 +312,9 @@ flowchart LR
     W -- writes --> F["desktop.json<br>settings.json"]
     C["we-linux apply / off"] -- writes --> F
     F --> D["we-linux daemon"]
-    H["Hyprland events"] --> D
+    H["the compositor: sockets,<br>D-Bus, Wayland"] --> D
     D -- "tells over a socket" --> P["wepaper<br>one process, all monitors"]
-    D -- still frame --> A["awww / swww / hyprpaper"]
+    D -- still frame --> A["awww / swww /<br>the desktop's own"]
     D -- hook --> X["your colours:<br>matugen, wal, wallust"]
 ```
 
@@ -289,7 +336,8 @@ memory.
 - The icons are [Font Awesome Free](https://fontawesome.com) 6.7.2 by Fonticons, Inc., licensed
   under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) (`ui/icons.slint` holds their
   outlines unchanged).
-- [awww](https://codeberg.org/LGFae/awww), swww and hyprpaper, which it plays nicely with.
+- [awww](https://codeberg.org/LGFae/awww), swww, hyprpaper, swaybg and Plasma's wallpaper, which
+  it plays nicely with.
 
 ## License
 

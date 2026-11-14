@@ -3,12 +3,13 @@
 //! It runs one `wepaper daemon` (the renderer) and tells it over its control
 //! socket what desktop.json and settings.json say: which wallpaper on which
 //! monitor, with which properties, how loud, how fast. Nothing restarts when a
-//! setting changes. On Hyprland it freezes the wallpaper of a monitor that
-//! shows a fullscreen window (or, when asked, stops the renderer while every
-//! monitor does, so a game gets the video memory). It also gives the desktop
-//! a still of the wallpaper (awww, swww or hyprpaper, when one runs), runs the
-//! user's hook, keeps the renderer's layer over the static wallpaper's, and
-//! steps through the playlist.
+//! setting changes. It freezes the wallpaper of a monitor that shows a
+//! fullscreen window (or, when asked, stops the renderer while every monitor
+//! does, so a game gets the video memory), as the compositor tells it
+//! (compositor/). It also gives the desktop a still of the wallpaper (awww,
+//! swww or the desktop's own wallpaper program), runs the user's hook, keeps
+//! the renderer's layer over the static wallpaper's, and steps through the
+//! playlist.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -21,6 +22,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+use crate::compositor::{self, Change, Over};
 use crate::desktop::{self, Desktop, Settings};
 
 unsafe extern "C" {
@@ -47,8 +49,6 @@ extern "C" fn on_stop(_: i32) {
 
 /// The renderer's binary.
 const ENGINE: &str = "wepaper";
-/// The layer-shell namespace of its surfaces: what compositor rules match.
-const NAMESPACE: &str = "wepaper";
 
 /// Where the daemon's lock, the engines' sockets and their logs are
 /// (WE_LINUX_RUNTIME_DIR names another place: a second daemon for a test).
@@ -379,7 +379,7 @@ pub fn shown() -> Vec<(String, PathBuf)> {
 }
 
 /// The monitors the renderer draws on, with their size: what tells the
-/// monitors apart where the compositor does not (anything but Hyprland).
+/// monitors apart where the compositor does not.
 pub fn outputs() -> Vec<(String, u32, u32)> {
     let Ok(outputs) = call(json!({ "cmd": "get", "path": "outputs" })) else {
         return Vec::new();
@@ -451,65 +451,6 @@ fn run(program: &str, args: &[&str]) -> bool {
         .is_ok_and(|s| s.success())
 }
 
-fn hyprland() -> bool {
-    std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
-}
-
-fn hypr_json(what: &str) -> Option<serde_json::Value> {
-    let out = Command::new("hyprctl").args([what, "-j"]).stderr(Stdio::null()).output().ok()?;
-    serde_json::from_slice(&out.stdout).ok()
-}
-
-/// What is over a monitor's desktop, on Hyprland.
-#[derive(Clone, Copy, Default, PartialEq, Debug)]
-struct Over {
-    /// A window has the focus there.
-    focused: bool,
-    /// 0 nothing, 1 a window maximised over it, 2 a fullscreen window.
-    covered: u8,
-    /// The monitor sleeps (its power is off).
-    asleep: bool,
-}
-
-/// Hyprland's monitors, each with what is over its desktop.
-fn covered_monitors() -> Vec<(String, Over)> {
-    let (Some(monitors), Some(clients)) = (hypr_json("monitors"), hypr_json("clients")) else {
-        return Vec::new();
-    };
-    let active = hypr_json("activewindow").and_then(|w| w["monitor"].as_i64());
-    let covering: Vec<(i64, u8)> = clients
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|c| {
-            let how = c["fullscreen"].as_i64().unwrap_or(0).clamp(0, 2) as u8;
-            (how > 0).then_some((c["workspace"]["id"].as_i64()?, how))
-        })
-        .collect();
-    monitors
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|m| {
-            let covered = [m["activeWorkspace"]["id"].as_i64(), m["specialWorkspace"]["id"].as_i64()]
-                .into_iter()
-                .flatten()
-                .filter(|id| *id != 0)
-                .flat_map(|id| {
-                    covering.iter().filter(move |(workspace, _)| *workspace == id).map(|(_, how)| *how)
-                })
-                .max()
-                .unwrap_or(0);
-            let over = Over {
-                focused: active.is_some() && active == m["id"].as_i64(),
-                covered,
-                asleep: m["dpmsStatus"].as_bool() == Some(false),
-            };
-            (m["name"].as_str().unwrap_or("").to_owned(), over)
-        })
-        .collect()
-}
-
 /// What the original's "Воспроизведение" asks of a wallpaper, weakest first.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum Playback {
@@ -567,15 +508,13 @@ fn others_play_sound(renderer: i32) -> bool {
     })
 }
 
-/// The size of the largest monitor (Hyprland's, else the renderer's), else
-/// 4K: stills are rendered at it.
+/// The size of the largest monitor (the compositor's, else the renderer's),
+/// else 4K: stills are rendered at it.
 fn largest_monitor() -> (u32, u32) {
-    hypr_json("monitors")
-        .and_then(|m| {
-            m.as_array()?
-                .iter()
-                .filter_map(|m| Some((m["width"].as_u64()? as u32, m["height"].as_u64()? as u32)))
-                .max_by_key(|(w, h)| w * h)
+    compositor::current()
+        .monitors()
+        .and_then(|monitors| {
+            monitors.into_iter().map(|m| m.pixels).filter(|(w, h)| w * h > 0).max_by_key(|(w, h)| w * h)
         })
         .or_else(|| {
             outputs()
@@ -585,26 +524,6 @@ fn largest_monitor() -> (u32, u32) {
                 .max_by_key(|(w, h)| w * h)
         })
         .unwrap_or((3840, 2160))
-}
-
-/// Hyprland stacks the layers of one level by their `order`, lower on top:
-/// -1 keeps the engine over a static wallpaper's layer (awww, swww,
-/// hyprpaper: 0) whichever of them started last. The layer fades in and out.
-fn hypr_layer_rule() {
-    if !hyprland() {
-        return;
-    }
-    // The Lua config (0.55+), the block syntax (0.53+), the old one.
-    let lua = format!(
-        r#"hl.layer_rule({{ match = {{ namespace = "^({NAMESPACE})$" }}, order = -1, animation = "fade" }})"#
-    );
-    let _ = run("hyprctl", &["eval", &lua])
-        || run(
-            "hyprctl",
-            &["keyword", "layerrule", &format!("match:namespace ^({NAMESPACE})$, order -1, animation fade")],
-        )
-        || (run("hyprctl", &["keyword", "layerrule", &format!("order -1, {NAMESPACE}")])
-            && run("hyprctl", &["keyword", "layerrule", &format!("animation fade, {NAMESPACE}")]));
 }
 
 // ------------------------------------------------------------------ stills
@@ -686,15 +605,45 @@ pub fn still(wallpaper: &Path) -> Option<PathBuf> {
     Some(out)
 }
 
-/// Hand a picture to the static wallpaper setter that runs: awww, swww or
-/// hyprpaper. False when there is none.
+/// Hand a picture to the static wallpaper program that runs: awww, swww or
+/// the desktop's own. False when there is none.
 pub fn show_image(image: &Path) -> bool {
-    let path = image.to_string_lossy();
-    run("awww", &["img", &path])
-        || run("swww", &["img", &path])
-        || (run("hyprctl", &["hyprpaper", "preload", &path])
-            && run("hyprctl", &["hyprpaper", "wallpaper", &format!(",{path}")]))
+    show_image_on(image, None)
 }
+
+/// The same on one monitor, or on all.
+fn show_image_on(image: &Path, monitor: Option<&str>) -> bool {
+    let path = image.to_string_lossy();
+    let mut args = vec!["img"];
+    if let Some(monitor) = monitor {
+        args.extend(["-o", monitor]);
+    }
+    args.push(&path);
+    if run("awww", &args) || run("swww", &args) {
+        return true;
+    }
+    let desktop = compositor::current();
+    let shown = desktop.show_picture(image, monitor);
+    // Its program started anew for the picture and is over the renderer now.
+    if shown && desktop.picture_covers() {
+        restack();
+    }
+    shown
+}
+
+/// Have the daemon's renderer make its surfaces anew, which puts them over
+/// every other program's layer.
+fn restack() {
+    RESTACK.store(true, std::sync::atomic::Ordering::Relaxed);
+    if let Some(wake) = WAKE.get() {
+        let _ = wake.send(());
+    }
+}
+
+/// The renderer is to make its surfaces anew: see [`restack`].
+static RESTACK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// What wakes the daemon's loop.
+static WAKE: std::sync::OnceLock<Sender<()>> = std::sync::OnceLock::new();
 
 /// Where the pictures the static setter showed before our still are kept.
 fn before_file() -> PathBuf {
@@ -706,7 +655,7 @@ fn output(program: &str, args: &[&str]) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// What awww, swww or hyprpaper shows now: monitor and picture.
+/// What awww, swww or the desktop's own program shows now: monitor and picture.
 fn shown_images() -> Vec<(String, PathBuf)> {
     // ": DP-1: 2560x1440, scale: 1, currently displaying: image: /a/b.png"
     let daemon = |text: String| -> Vec<(String, PathBuf)> {
@@ -722,16 +671,7 @@ fn shown_images() -> Vec<(String, PathBuf)> {
     if let Some(text) = output("awww", &["query"]).or_else(|| output("swww", &["query"])) {
         return daemon(text);
     }
-    // "DP-1 = /a/b.png"
-    output("hyprctl", &["hyprpaper", "listactive"])
-        .map(|text| {
-            text.lines()
-                .filter_map(|line| line.split_once(" = "))
-                .filter(|(_, image)| image.starts_with('/'))
-                .map(|(monitor, image)| (monitor.trim().to_owned(), PathBuf::from(image.trim())))
-                .collect()
-        })
-        .unwrap_or_default()
+    compositor::current().pictures()
 }
 
 /// Keep what the static setter shows, once, before a still goes over it.
@@ -764,11 +704,8 @@ pub fn restore_images() {
     forget_images();
     let images: Vec<(String, PathBuf)> = serde_json::from_str(&text).unwrap_or_default();
     for (monitor, image) in images.iter().filter(|(_, image)| image.is_file()) {
-        let path = image.to_string_lossy();
-        let _ = run("awww", &["img", "-o", monitor, &path])
-            || run("swww", &["img", "-o", monitor, &path])
-            || (run("hyprctl", &["hyprpaper", "preload", &path])
-                && run("hyprctl", &["hyprpaper", "wallpaper", &format!("{monitor},{path}")]));
+        let monitor = (monitor != "*").then_some(monitor.as_str());
+        show_image_on(image, monitor);
     }
 }
 
@@ -944,6 +881,7 @@ fn spawn(settings: &Settings) -> Result<Child, String> {
     for (key, value) in told(settings, false) {
         command.arg("--set").arg(format!("{key}={value}"));
     }
+    command.arg("--set").arg(format!("layer={}", compositor::current().layer()));
     command.stdin(Stdio::null()).stdout(log.try_clone().map_err(|e| e.to_string())?).stderr(log);
     // The renderer goes when the daemon does, however that ends.
     unsafe {
@@ -996,6 +934,7 @@ fn watch_stop(wake: Sender<()>) {
         }
         std::thread::sleep(GRACE);
         restore_images();
+        compositor::current().leave();
         std::process::exit(0);
     });
 }
@@ -1035,37 +974,19 @@ pub fn errors() -> Vec<(PathBuf, String)> {
         .unwrap_or_default()
 }
 
-/// Hyprland's event socket: what may change whether a fullscreen window
-/// covers the desktop, or which monitors there are.
-fn watch_hyprland(wake: Sender<()>) {
-    let (Some(runtime), Some(signature)) =
-        (std::env::var_os("XDG_RUNTIME_DIR"), std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE"))
-    else {
-        return;
-    };
-    let socket = PathBuf::from(runtime).join("hypr").join(signature).join(".socket2.sock");
+/// What the compositor says: the loop wakes, and the renderer makes its
+/// surfaces anew when another layer may now be over them.
+fn watch_compositor(wake: Sender<()>) {
+    let (changes, heard) = channel();
+    compositor::current().watch(changes);
     std::thread::spawn(move || {
-        loop {
-            if let Ok(stream) = UnixStream::connect(&socket) {
-                for line in BufReader::new(stream).lines().map_while(Result::ok) {
-                    let relevant = [
-                        "fullscreen",
-                        "workspace",
-                        "focusedmon",
-                        "activespecial",
-                        "activewindow",
-                        "openwindow",
-                        "closewindow",
-                        "movewindow",
-                        "monitoradded",
-                        "monitorremoved",
-                    ];
-                    if relevant.iter().any(|e| line.starts_with(e)) && wake.send(()).is_err() {
-                        return;
-                    }
-                }
+        for change in heard {
+            if change == Change::Layers {
+                RESTACK.store(true, std::sync::atomic::Ordering::Relaxed);
             }
-            std::thread::sleep(Duration::from_secs(2));
+            if wake.send(()).is_err() {
+                return;
+            }
         }
     });
 }
@@ -1105,11 +1026,12 @@ pub fn run_daemon() {
         std::thread::sleep(Duration::from_millis(120));
         while woken.try_recv().is_ok() {}
     };
-    watch_hyprland(wake.clone());
+    let _ = WAKE.set(wake.clone());
+    watch_compositor(wake.clone());
     watch_stop(wake.clone());
     watch_files(wake);
     std::thread::spawn(desktop::run_playlist);
-    hypr_layer_rule();
+    compositor::current().keep_on_top();
 
     let mut renderer: Option<(Child, Instant)> = None;
     let mut announced: Option<PathBuf> = None;
@@ -1149,6 +1071,7 @@ pub fn run_daemon() {
             }
             RENDERER.store(0, std::sync::atomic::Ordering::Relaxed);
             restore_images();
+            compositor::current().leave();
             std::process::exit(0);
         }
         let desktop = Desktop::load();
@@ -1175,7 +1098,7 @@ pub fn run_daemon() {
             hung = None;
             reported = None;
         }
-        let covered = if hyprland() { covered_monitors() } else { Vec::new() };
+        let covered: Vec<(String, Over)> = compositor::current().over().unwrap_or_default();
         let sound = settings.playback_audio != "run"
             && others_play_sound(RENDERER.load(std::sync::atomic::Ordering::Relaxed));
         let playbacks: Vec<(String, Playback)> =
@@ -1216,8 +1139,10 @@ pub fn run_daemon() {
                     await_renderer(&mut child);
                     renderer = Some((child, Instant::now()));
                     down = None;
-                    // A new renderer plays on every monitor, with these settings.
+                    // A new renderer plays on every monitor, with these settings,
+                    // its surfaces new and on top.
                     frozen.clear();
+                    RESTACK.store(false, std::sync::atomic::Ordering::Relaxed);
                     settings_told = Some(format!("{:?}", told(&settings, false)));
                 }
                 Err(e) => {
@@ -1233,6 +1158,11 @@ pub fn run_daemon() {
         // A monitor that was being given its wallpaper when the renderer hung.
         let mut loading: Option<(String, PathBuf)> = None;
         if renderer.is_some() && running() {
+            // Another program's layer went over the renderer's.
+            if RESTACK.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                let layer = compositor::current().layer();
+                let _ = call(json!({ "cmd": "set", "path": "config/layer", "value": layer }));
+            }
             // Settings that changed are told; nothing restarts.
             let now = format!("{:?}", told(&settings, muted));
             if settings_told.as_ref() != Some(&now) {
@@ -1420,14 +1350,33 @@ pub fn doctor() -> String {
         env("XDG_SESSION_TYPE"),
         env("WAYLAND_DISPLAY")
     ));
-    if hyprland() {
-        out.push(format!(
-            "hyprland: {}",
-            output("hyprctl", &["version"]).unwrap_or_else(|| "hyprctl does not answer".into())
-        ));
-        let monitors: Vec<String> =
-            desktop::monitors().into_iter().map(|m| format!("{} {}", m.name, m.detail)).collect();
-        out.push(format!("monitors: {}", monitors.join(", ")));
+    let desktop_side = compositor::current();
+    out.push(format!(
+        "compositor: {} {}",
+        desktop_side.name(),
+        desktop_side.version().unwrap_or_else(|| "(no version said)".into())
+    ));
+    let tells = desktop_side.tells();
+    let said = [
+        ("focus", tells.focus),
+        ("maximised", tells.maximized),
+        ("fullscreen", tells.fullscreen),
+        ("sleep", tells.sleep),
+    ];
+    let heard: Vec<&str> = said.iter().filter(|(_, told)| *told).map(|(what, _)| *what).collect();
+    out.push(format!(
+        "  tells: {}",
+        if heard.is_empty() { "nothing of what covers the monitors".to_owned() } else { heard.join(", ") }
+    ));
+    match desktop_side.monitors() {
+        Some(monitors) => {
+            let monitors: Vec<String> = monitors
+                .iter()
+                .map(|m| format!("{} {}x{} at {},{}", m.name, m.pixels.0, m.pixels.1, m.x, m.y))
+                .collect();
+            out.push(format!("monitors: {}", monitors.join(", ")));
+        }
+        None => out.push("monitors: the compositor does not say".to_owned()),
     }
     if let Some(memory) =
         output("nvidia-smi", &["--query-gpu=name,memory.used,memory.total", "--format=csv,noheader"])

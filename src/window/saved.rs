@@ -86,3 +86,89 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::browse::Browse;
+    use super::super::filters::Filters;
+    use super::super::settings::Language;
+    use super::*;
+
+    /// A state.json as the window writes it: the parts read it and write it
+    /// back the same.
+    const STATE: &str = r#"{
+  "tab": 0,
+  "workshop_sort": 3,
+  "local_sort": 5,
+  "filters_open": false,
+  "filters": {
+    "Показать только": ["Favorite"],
+    "Тип": ["Scene", "Web", "Wallpaper", "Preset"],
+    "Возрастной рейтинг": ["Everyone"],
+    "Разрешение экрана": ["1920 x 1080", "Other resolution"],
+    "Источник": ["Workshop"],
+    "Метки": ["Anime", "Nature"]
+  },
+  "filter_tags": {},
+  "hidden_groups": ["Метки"],
+  "favorites": [3, 7],
+  "language": "en",
+  "monitors_on_start": false,
+  "sort_descending": true,
+  "icon_size": 2,
+  "per_page": 200
+}"#;
+
+    #[test]
+    fn the_parts_write_back_what_they_read() {
+        // Ticks are kept only with the list of the tags they knew.
+        let mut state: serde_json::Value = serde_json::from_str(STATE).unwrap();
+        let mut known = serde_json::Map::new();
+        let mut written = Saved::default();
+        Filters::default().save_into(&mut written);
+        for (title, tags) in &written.filter_tags {
+            known.insert(title.clone(), serde_json::json!(tags));
+        }
+        state["filter_tags"] = serde_json::Value::Object(known);
+        let saved: Saved = serde_json::from_value(state.clone()).unwrap();
+
+        let (mut browse, mut filters) = (Browse::default(), Filters::default());
+        browse.restore(&saved);
+        filters.restore(&saved);
+        let mut again = Saved {
+            filters_open: saved.filters_open,
+            favorites: saved.favorites.clone(),
+            icon_size: saved.icon_size,
+            monitors_on_start: saved.monitors_on_start,
+            ..Saved::default()
+        };
+        browse.save_into(&mut again);
+        filters.save_into(&mut again);
+        Language::picked(saved.language.clone()).save_into(&mut again);
+        assert_eq!(serde_json::to_value(&again).unwrap(), state);
+    }
+
+    #[test]
+    fn the_file_keeps_its_keys_in_their_order() {
+        let json = serde_json::to_string(&Saved::default()).unwrap();
+        let keys: Vec<&str> = json.split('"').skip(1).step_by(2).collect();
+        assert_eq!(
+            keys,
+            [
+                "tab",
+                "workshop_sort",
+                "local_sort",
+                "filters_open",
+                "filters",
+                "filter_tags",
+                "hidden_groups",
+                "favorites",
+                "language",
+                "monitors_on_start",
+                "sort_descending",
+                "icon_size",
+                "per_page"
+            ]
+        );
+    }
+}

@@ -4880,7 +4880,11 @@ dependencies = [
  "serde_json",
  "slint",
  "ureq",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
  "we-linux-ui",
+ "zbus",
 ]
 
 [[package]]
