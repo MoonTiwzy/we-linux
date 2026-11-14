@@ -481,11 +481,13 @@ impl App {
         let page = match result {
             Ok(page) => page,
             Err(e) => {
+                let e = if self.catalog.steam_ok() { e } else { super::replies::offline(&e) };
                 ui.set_error(e.into());
                 self.set_cards(Vec::new());
                 return;
             }
         };
+        ui.set_error("".into());
         self.browse.total = page.total;
         let cards: Vec<Card> = page.entries.into_iter().map(|e| self.card_of(e)).collect();
         self.set_cards(cards);

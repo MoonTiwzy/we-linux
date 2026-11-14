@@ -2,7 +2,7 @@
 //! `USAGE`). With no command (or with `--show`, which only shapes the window)
 //! the window opens instead.
 
-use crate::steam::{self, Sort};
+use crate::steam::{self, Sort, Workshop};
 use crate::units::megabytes;
 use crate::{desktop, engine, library};
 
@@ -136,7 +136,7 @@ pub fn run() -> Option<i32> {
                 trend_days,
                 author: 0,
             };
-            match steam::Steam::open().and_then(|steam| steam.query(&query)) {
+            match steam::Steam::open().and_then(|mut steam| steam.query(&query)) {
                 Ok(page) => {
                     for e in &page.entries {
                         say!("{}\t{} MB\t+{}\t{}", e.id, (e.size >> 20).max(1), e.up, e.title);
@@ -155,7 +155,7 @@ pub fn run() -> Option<i32> {
                 eprintln!("{USAGE}");
                 return Some(2);
             }
-            let steam = match steam::Steam::open() {
+            let mut steam = match steam::Steam::open() {
                 Ok(steam) => steam,
                 Err(e) => {
                     eprintln!("we-linux: {e}");
@@ -163,17 +163,19 @@ pub fn run() -> Option<i32> {
                 }
             };
             let subscribing = args[0] == "subscribe";
+            // What Steam took: a refused one has nothing coming to wait for.
+            let mut taken = Vec::new();
             for &id in &ids {
-                let ok = if subscribing { steam.subscribe(id) } else { steam.unsubscribe(id) };
-                say!(
-                    "{id}: {}",
-                    if ok {
-                        if subscribing { "subscribed" } else { "unsubscribed" }
-                    } else {
-                        "Steam refused"
-                    }
-                );
-                if ok && !subscribing {
+                let result = if subscribing { steam.subscribe(id) } else { steam.unsubscribe(id) };
+                if subscribing && result.is_ok() {
+                    steam.download(id);
+                    taken.push(id);
+                }
+                match &result {
+                    Ok(()) => say!("{id}: {}", if subscribing { "subscribed" } else { "unsubscribed" }),
+                    Err(why) => say!("{id}: Steam refused: {why}"),
+                }
+                if result.is_ok() && !subscribing {
                     for item in library::installed().into_iter().filter(|item| item.id == id) {
                         if desktop::current().as_deref() == Some(item.dir.as_path()) {
                             let _ = desktop::off();
@@ -189,9 +191,9 @@ pub fn run() -> Option<i32> {
                 let started = std::time::Instant::now();
                 loop {
                     steam.pump();
-                    let left = ids.iter().filter(|&&id| steam.progress(id).0 & steam::INSTALLED == 0).count();
+                    let left = taken.iter().filter(|&&id| !steam.progress(id).state.finished()).count();
                     if left == 0 || started.elapsed().as_secs() > 600 {
-                        say!("downloaded: {} of {}", ids.len() - left, ids.len());
+                        say!("downloaded: {} of {}", taken.len() - left, ids.len());
                         break;
                     }
                     std::thread::sleep(std::time::Duration::from_millis(500));
