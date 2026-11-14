@@ -74,7 +74,11 @@ fn fetch(url: &str, id: u64) -> Result<Vec<u8>, String> {
     // Written whole: a grid cell and the side panel may fetch the same
     // preview at once, and neither reads half of the other's file.
     static PART: AtomicU64 = AtomicU64::new(0);
-    let part = cache_dir().join(format!("{id}.{}.{}.part", std::process::id(), PART.fetch_add(1, Ordering::Relaxed)));
+    let part = cache_dir().join(format!(
+        "{id}.{}.{}.part",
+        std::process::id(),
+        PART.fetch_add(1, Ordering::Relaxed)
+    ));
     let _ = std::fs::create_dir_all(cache_dir());
     if std::fs::write(&part, &bytes).and_then(|()| std::fs::rename(&part, &cached)).is_err() {
         let _ = std::fs::remove_file(&part);
@@ -116,7 +120,8 @@ fn animation(bytes: &[u8], size: u32, budget: usize) -> Option<Vec<(image::RgbaI
         let frame = frame.into_buffer();
         let frame = if frame.width().max(frame.height()) > size {
             let scale = f64::from(size) / f64::from(frame.width().max(frame.height()));
-            let (w, h) = ((f64::from(frame.width()) * scale) as u32, (f64::from(frame.height()) * scale) as u32);
+            let (w, h) =
+                ((f64::from(frame.width()) * scale) as u32, (f64::from(frame.height()) * scale) as u32);
             image::imageops::thumbnail(&frame, w.max(1), h.max(1))
         } else {
             frame

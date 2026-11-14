@@ -172,7 +172,10 @@ fn data_dir() -> PathBuf {
 fn usable(path: &Path) -> bool {
     let Ok(bytes) = std::fs::read(path) else { return false };
     let needle = b"SteamAPI_SteamUGC_v021";
-    bytes.len() > 5 && bytes[..4] == *b"\x7fELF" && bytes[4] == 2 && bytes.windows(needle.len()).any(|w| w == needle)
+    bytes.len() > 5
+        && bytes[..4] == *b"\x7fELF"
+        && bytes[4] == 2
+        && bytes.windows(needle.len()).any(|w| w == needle)
 }
 
 /// Steam itself has no libsteam_api.so, every native game brings its own:
@@ -218,7 +221,11 @@ fn steam_api() -> Option<PathBuf> {
 fn symbol(lib: *mut c_void, name: &str) -> Result<*mut c_void, String> {
     let c = CString::new(name).map_err(|e| e.to_string())?;
     let p = unsafe { dlsym(lib, c.as_ptr()) };
-    if p.is_null() { Err(crate::tf!("libsteam_api.so has no {name}", "в libsteam_api.so нет {name}")) } else { Ok(p) }
+    if p.is_null() {
+        Err(crate::tf!("libsteam_api.so has no {name}", "в libsteam_api.so нет {name}"))
+    } else {
+        Ok(p)
+    }
 }
 
 fn text(bytes: &[u8]) -> String {
@@ -270,14 +277,15 @@ impl Steam {
             // The user and their friends: what the lists of one's own and the
             // author line need. A library without them still browses.
             let optional = |name: &str| symbol(lib, name).ok();
-            let account = match (optional("SteamAPI_SteamUser_v023"), optional("SteamAPI_ISteamUser_GetSteamID")) {
-                (Some(user), Some(id)) => {
-                    let user: unsafe extern "C" fn() -> *mut c_void = std::mem::transmute(user);
-                    let id: unsafe extern "C" fn(*mut c_void) -> u64 = std::mem::transmute(id);
-                    id(user()) as u32
-                }
-                _ => 0,
-            };
+            let account =
+                match (optional("SteamAPI_SteamUser_v023"), optional("SteamAPI_ISteamUser_GetSteamID")) {
+                    (Some(user), Some(id)) => {
+                        let user: unsafe extern "C" fn() -> *mut c_void = std::mem::transmute(user);
+                        let id: unsafe extern "C" fn(*mut c_void) -> u64 = std::mem::transmute(id);
+                        id(user()) as u32
+                    }
+                    _ => 0,
+                };
             let friends = optional("SteamAPI_SteamFriends_v018")
                 .or_else(|| optional("SteamAPI_SteamFriends_v017"))
                 .map(|f| std::mem::transmute::<*mut c_void, unsafe extern "C" fn() -> *mut c_void>(f)())
@@ -314,9 +322,12 @@ impl Steam {
                 details_query: f!("SteamAPI_ISteamUGC_CreateQueryUGCDetailsRequest"),
                 account,
                 friends,
-                request_user: optional("SteamAPI_ISteamFriends_RequestUserInformation").map(|f| std::mem::transmute(f)),
-                persona_name: optional("SteamAPI_ISteamFriends_GetFriendPersonaName").map(|f| std::mem::transmute(f)),
-                small_avatar: optional("SteamAPI_ISteamFriends_GetSmallFriendAvatar").map(|f| std::mem::transmute(f)),
+                request_user: optional("SteamAPI_ISteamFriends_RequestUserInformation")
+                    .map(|f| std::mem::transmute(f)),
+                persona_name: optional("SteamAPI_ISteamFriends_GetFriendPersonaName")
+                    .map(|f| std::mem::transmute(f)),
+                small_avatar: optional("SteamAPI_ISteamFriends_GetSmallFriendAvatar")
+                    .map(|f| std::mem::transmute(f)),
                 image_size: f!("SteamAPI_ISteamUtils_GetImageSize"),
                 image_rgba: f!("SteamAPI_ISteamUtils_GetImageRGBA"),
             })
@@ -352,10 +363,23 @@ impl Steam {
                 (self.user_query)(self.ugc, q.author, 0, READY_TO_USE, 0, APP, APP, q.page.max(1))
             } else if q.sort.personal() {
                 if self.account == 0 {
-                    return Err(crate::lang::t("Steam does not say who is signed in", "Steam не говорит, кто вошёл").into());
+                    return Err(crate::lang::t(
+                        "Steam does not say who is signed in",
+                        "Steam не говорит, кто вошёл",
+                    )
+                    .into());
                 }
                 // k_EUserUGCListSortOrder_SubscriptionDateDesc
-                (self.user_query)(self.ugc, self.account, q.sort.code(), READY_TO_USE, 4, APP, APP, q.page.max(1))
+                (self.user_query)(
+                    self.ugc,
+                    self.account,
+                    q.sort.code(),
+                    READY_TO_USE,
+                    4,
+                    APP,
+                    APP,
+                    q.page.max(1),
+                )
             } else {
                 (self.create_query)(self.ugc, q.sort.code(), READY_TO_USE, APP, APP, q.page.max(1))
             };
@@ -406,11 +430,24 @@ impl Steam {
             // GetUserItemVoteResult_t (3409): id 0, result 8, voted up 12, voted down 13.
             let mut done = [0u8; 32];
             let mut failed = false;
-            let ok = (self.call_result)(self.utils, call, done.as_mut_ptr() as *mut c_void, done.len() as i32, 3409, &mut failed);
+            let ok = (self.call_result)(
+                self.utils,
+                call,
+                done.as_mut_ptr() as *mut c_void,
+                done.len() as i32,
+                3409,
+                &mut failed,
+            );
             if !ok || failed || u32_at(&done, 8) != 1 {
                 return 0;
             }
-            if done[12] != 0 { 1 } else if done[13] != 0 { -1 } else { 0 }
+            if done[12] != 0 {
+                1
+            } else if done[13] != 0 {
+                -1
+            } else {
+                0
+            }
         }
     }
 
@@ -421,7 +458,13 @@ impl Steam {
 
     /// Add an item to the user's workshop favourites, or take it out.
     pub fn set_favorite(&self, id: u64, on: bool) -> bool {
-        self.wait(unsafe { if on { (self.add_favorite)(self.ugc, APP, id) } else { (self.remove_favorite)(self.ugc, APP, id) } })
+        self.wait(unsafe {
+            if on {
+                (self.add_favorite)(self.ugc, APP, id)
+            } else {
+                (self.remove_favorite)(self.ugc, APP, id)
+            }
+        })
     }
 
     /// Who a Steam user is: asked for once, known after a moment (None until).
@@ -446,7 +489,8 @@ impl Steam {
                     return None;
                 }
                 let mut rgba = vec![0u8; (w * h * 4) as usize];
-                (self.image_rgba)(self.utils, image, rgba.as_mut_ptr(), rgba.len() as i32).then_some((w, h, rgba))
+                (self.image_rgba)(self.utils, image, rgba.as_mut_ptr(), rgba.len() as i32)
+                    .then_some((w, h, rgba))
             });
             Some(Persona { name, avatar })
         }
@@ -473,7 +517,11 @@ impl Steam {
             );
             if !ok || failed || u32_at(&done, 8) != 1 {
                 (self.release_query)(self.ugc, handle);
-                return Err(crate::tf!("the workshop answered with error {}", "мастерская ответила ошибкой {}", u32_at(&done, 8)));
+                return Err(crate::tf!(
+                    "the workshop answered with error {}",
+                    "мастерская ответила ошибкой {}",
+                    u32_at(&done, 8)
+                ));
             }
             let (returned, total) = (u32_at(&done, 12), u32_at(&done, 16));
             let mut entries = Vec::with_capacity(returned as usize);
@@ -491,7 +539,11 @@ impl Steam {
                 entries.push(Entry {
                     id: u64::from_le_bytes(details[0..8].try_into().unwrap()),
                     title: text(&details[24..153]),
-                    tags: text(&details[8183..9208]).split(',').filter(|t| !t.is_empty()).map(str::to_owned).collect(),
+                    tags: text(&details[8183..9208])
+                        .split(',')
+                        .filter(|t| !t.is_empty())
+                        .map(str::to_owned)
+                        .collect(),
                     size: u32_at(&details, 9484) as u64,
                     up: u32_at(&details, 9748),
                     down: u32_at(&details, 9752),
@@ -545,15 +597,24 @@ impl Drop for Steam {
 }
 
 pub enum Command {
-    Query { generation: u64, query: Query },
+    Query {
+        generation: u64,
+        query: Query,
+    },
     /// The workshop's details of installed items.
     Details(Vec<u64>),
     /// Who an author is.
     Persona(u64),
     /// The user's vote on an item, asked or given.
     Vote(u64),
-    SetVote { id: u64, up: bool },
-    Favorite { id: u64, on: bool },
+    SetVote {
+        id: u64,
+        up: bool,
+    },
+    Favorite {
+        id: u64,
+        on: bool,
+    },
     Subscribe(u64),
     Unsubscribe(u64),
     Quit,
@@ -562,14 +623,34 @@ pub enum Command {
 pub enum Reply {
     /// Steam is there (or why not).
     Session(Result<(), String>),
-    Page { generation: u64, result: Result<Page, String> },
+    Page {
+        generation: u64,
+        result: Result<Page, String>,
+    },
     Details(Vec<Entry>),
-    Persona { id: u64, persona: Persona },
-    Vote { id: u64, vote: i32 },
-    Subscribed { id: u64, ok: bool },
-    Unsubscribed { id: u64, ok: bool },
+    Persona {
+        id: u64,
+        persona: Persona,
+    },
+    Vote {
+        id: u64,
+        vote: i32,
+    },
+    Subscribed {
+        id: u64,
+        ok: bool,
+    },
+    Unsubscribed {
+        id: u64,
+        ok: bool,
+    },
     Subscriptions(Vec<(u64, u32)>),
-    Progress { id: u64, state: u32, done: u64, total: u64 },
+    Progress {
+        id: u64,
+        state: u32,
+        done: u64,
+        total: u64,
+    },
 }
 
 /// The Steam thread: opens the session (trying again every few seconds while
@@ -602,7 +683,8 @@ pub fn spawn(reply: impl Fn(Reply) + Send + 'static) -> Sender<Command> {
                     }
                 }
                 // What waited for Steam, in the order it was asked for.
-                let command = if steam.is_some() && !pending.is_empty() { Some(pending.remove(0)) } else { None };
+                let command =
+                    if steam.is_some() && !pending.is_empty() { Some(pending.remove(0)) } else { None };
                 let command = match command {
                     Some(c) => Some(c),
                     None => match rx.recv_timeout(Duration::from_millis(100)) {

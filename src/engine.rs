@@ -58,7 +58,8 @@ pub fn runtime_dir() -> PathBuf {
     }
     // Without a runtime directory: in the user's own cache, not in /tmp,
     // where anyone could have made the folder first.
-    std::env::var_os("XDG_RUNTIME_DIR").map_or_else(|| cache_dir().join("run"), |dir| PathBuf::from(dir).join("we-linux"))
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map_or_else(|| cache_dir().join("run"), |dir| PathBuf::from(dir).join("we-linux"))
 }
 
 pub fn cache_dir() -> PathBuf {
@@ -103,7 +104,9 @@ pub struct Plugin {
 /// renderer looks, a later place winning over an earlier one.
 pub fn plugins() -> Vec<Plugin> {
     let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-    let var = |name: &str, fallback: PathBuf| std::env::var_os(name).map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or(fallback);
+    let var = |name: &str, fallback: PathBuf| {
+        std::env::var_os(name).map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or(fallback)
+    };
     let mut places: Vec<PathBuf> = Vec::new();
     if let Some(prefix) = bin(ENGINE).as_deref().and_then(Path::parent).and_then(Path::parent) {
         places.push(prefix.join("share/wepaper/plugins"));
@@ -115,7 +118,12 @@ pub fn plugins() -> Vec<Plugin> {
     for place in places {
         for entry in std::fs::read_dir(place).into_iter().flatten().flatten() {
             let path = entry.path();
-            let Some(manifest) = std::fs::read(path.join("plugin.json")).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) else { continue };
+            let Some(manifest) = std::fs::read(path.join("plugin.json"))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            else {
+                continue;
+            };
             let folder = entry.file_name().to_string_lossy().into_owned();
             let id = manifest["id"].as_str().map_or(folder.clone(), str::to_owned);
             let plugin = Plugin {
@@ -174,7 +182,9 @@ pub fn ask(socket: &Path, request: &Value, patience: Duration) -> Result<Value, 
     let stream = UnixStream::connect(socket).map_err(|_| Failure::Absent)?;
     let _ = stream.set_read_timeout(Some(patience));
     let _ = stream.set_write_timeout(Some(patience));
-    let timed_out = |e: &std::io::Error| matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut);
+    let timed_out = |e: &std::io::Error| {
+        matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)
+    };
     let silent = || {
         SILENT.set(true);
         Failure::Silent
@@ -188,7 +198,8 @@ pub fn ask(socket: &Path, request: &Value, patience: Duration) -> Result<Value, 
     if let Err(e) = BufReader::new(&stream).read_line(&mut answer) {
         return Err(if timed_out(&e) { silent() } else { Failure::Said(e.to_string()) });
     }
-    let answer: Value = serde_json::from_str(&answer).map_err(|_| Failure::Said("the renderer gave no answer".to_owned()))?;
+    let answer: Value =
+        serde_json::from_str(&answer).map_err(|_| Failure::Said("the renderer gave no answer".to_owned()))?;
     if answer["ok"].as_bool() == Some(true) {
         Ok(answer["value"].clone())
     } else {
@@ -216,7 +227,15 @@ pub fn listener(socket: &Path) -> Option<i32> {
     let stream = UnixStream::connect(socket).ok()?;
     let mut credentials = Credentials { pid: 0, uid: 0, gid: 0 };
     let mut length = std::mem::size_of::<Credentials>() as u32;
-    let got = unsafe { getsockopt(stream.as_raw_fd(), SOL_SOCKET, SO_PEERCRED, (&raw mut credentials).cast(), &raw mut length) };
+    let got = unsafe {
+        getsockopt(
+            stream.as_raw_fd(),
+            SOL_SOCKET,
+            SO_PEERCRED,
+            (&raw mut credentials).cast(),
+            &raw mut length,
+        )
+    };
     (got == 0 && credentials.pid > 0 && credentials.uid == unsafe { getuid() }).then_some(credentials.pid)
 }
 
@@ -294,7 +313,9 @@ pub fn shown() -> Vec<(String, PathBuf)> {
         .as_object()
         .into_iter()
         .flatten()
-        .filter_map(|(name, output)| Some((name.clone(), PathBuf::from(output["wallpaper"]["path"].as_str()?))))
+        .filter_map(|(name, output)| {
+            Some((name.clone(), PathBuf::from(output["wallpaper"]["path"].as_str()?)))
+        })
         .collect()
 }
 
@@ -306,7 +327,13 @@ pub fn outputs() -> Vec<(String, u32, u32)> {
         .as_object()
         .into_iter()
         .flatten()
-        .map(|(name, output)| (name.clone(), output["size"][0].as_u64().unwrap_or(0) as u32, output["size"][1].as_u64().unwrap_or(0) as u32))
+        .map(|(name, output)| {
+            (
+                name.clone(),
+                output["size"][0].as_u64().unwrap_or(0) as u32,
+                output["size"][1].as_u64().unwrap_or(0) as u32,
+            )
+        })
         .collect()
 }
 
@@ -322,7 +349,8 @@ pub fn tell_property(wallpaper: &Path, name: &str, value: &Value) {
             // The alignment of a video is how the renderer fills the monitor.
             if name == "alignment" {
                 let fill = crate::props::fill_of(&value).map_or(Value::Null, Value::from);
-                let _ = call(json!({ "cmd": "set", "path": format!("outputs/{output}/fill"), "value": fill }));
+                let _ =
+                    call(json!({ "cmd": "set", "path": format!("outputs/{output}/fill"), "value": fill }));
                 continue;
             }
             let path = format!("outputs/{output}/wallpaper/properties/{name}");
@@ -367,7 +395,9 @@ struct Over {
 
 /// Hyprland's monitors, each with what is over its desktop.
 fn covered_monitors() -> Vec<(String, Over)> {
-    let (Some(monitors), Some(clients)) = (hypr_json("monitors"), hypr_json("clients")) else { return Vec::new() };
+    let (Some(monitors), Some(clients)) = (hypr_json("monitors"), hypr_json("clients")) else {
+        return Vec::new();
+    };
     let active = hypr_json("activewindow").and_then(|w| w["monitor"].as_i64());
     let covering: Vec<(i64, u8)> = clients
         .as_array()
@@ -387,7 +417,9 @@ fn covered_monitors() -> Vec<(String, Over)> {
                 .into_iter()
                 .flatten()
                 .filter(|id| *id != 0)
-                .flat_map(|id| covering.iter().filter(move |(workspace, _)| *workspace == id).map(|(_, how)| *how))
+                .flat_map(|id| {
+                    covering.iter().filter(move |(workspace, _)| *workspace == id).map(|(_, how)| *how)
+                })
                 .max()
                 .unwrap_or(0);
             let over = Over {
@@ -445,8 +477,12 @@ fn others_play_sound(renderer: i32) -> bool {
     let Some(text) = output("pactl", &["list", "sink-inputs"]) else { return false };
     text.split("Sink Input #").skip(1).any(|stream| {
         let playing = stream.lines().any(|l| l.trim() == "Corked: no");
-        let pid = stream.lines().find_map(|l| l.trim().strip_prefix("application.process.id = ")).map(|v| v.trim_matches('"').to_owned());
-        let ours = pid.is_some_and(|p| p == renderer.to_string()) || stream.contains("application.process.binary = \"wepaper\"");
+        let pid = stream
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("application.process.id = "))
+            .map(|v| v.trim_matches('"').to_owned());
+        let ours = pid.is_some_and(|p| p == renderer.to_string())
+            || stream.contains("application.process.binary = \"wepaper\"");
         playing && !ours
     })
 }
@@ -461,7 +497,13 @@ fn largest_monitor() -> (u32, u32) {
                 .filter_map(|m| Some((m["width"].as_u64()? as u32, m["height"].as_u64()? as u32)))
                 .max_by_key(|(w, h)| w * h)
         })
-        .or_else(|| outputs().into_iter().map(|(_, w, h)| (w, h)).filter(|(w, h)| w * h > 0).max_by_key(|(w, h)| w * h))
+        .or_else(|| {
+            outputs()
+                .into_iter()
+                .map(|(_, w, h)| (w, h))
+                .filter(|(w, h)| w * h > 0)
+                .max_by_key(|(w, h)| w * h)
+        })
         .unwrap_or((3840, 2160))
 }
 
@@ -473,9 +515,14 @@ fn hypr_layer_rule() {
         return;
     }
     // The Lua config (0.55+), the block syntax (0.53+), the old one.
-    let lua = format!(r#"hl.layer_rule({{ match = {{ namespace = "^({NAMESPACE})$" }}, order = -1, animation = "fade" }})"#);
+    let lua = format!(
+        r#"hl.layer_rule({{ match = {{ namespace = "^({NAMESPACE})$" }}, order = -1, animation = "fade" }})"#
+    );
     let _ = run("hyprctl", &["eval", &lua])
-        || run("hyprctl", &["keyword", "layerrule", &format!("match:namespace ^({NAMESPACE})$, order -1, animation fade")])
+        || run(
+            "hyprctl",
+            &["keyword", "layerrule", &format!("match:namespace ^({NAMESPACE})$, order -1, animation fade")],
+        )
         || (run("hyprctl", &["keyword", "layerrule", &format!("order -1, {NAMESPACE}")])
             && run("hyprctl", &["keyword", "layerrule", &format!("animation fade, {NAMESPACE}")]));
 }
@@ -532,7 +579,18 @@ pub fn still(wallpaper: &Path) -> Option<PathBuf> {
         let video = wallpaper.join(file);
         let done = run(
             "ffmpeg",
-            &["-v", "error", "-y", "-i", &video.to_string_lossy(), "-frames:v", "1", "-q:v", "2", &part.to_string_lossy()],
+            &[
+                "-v",
+                "error",
+                "-y",
+                "-i",
+                &video.to_string_lossy(),
+                "-frames:v",
+                "1",
+                "-q:v",
+                "2",
+                &part.to_string_lossy(),
+            ],
         );
         if done && std::fs::rename(&part, &out).is_ok() {
             return Some(out);
@@ -554,7 +612,8 @@ pub fn show_image(image: &Path) -> bool {
     let path = image.to_string_lossy();
     run("awww", &["img", &path])
         || run("swww", &["img", &path])
-        || (run("hyprctl", &["hyprpaper", "preload", &path]) && run("hyprctl", &["hyprpaper", "wallpaper", &format!(",{path}")]))
+        || (run("hyprctl", &["hyprpaper", "preload", &path])
+            && run("hyprctl", &["hyprpaper", "wallpaper", &format!(",{path}")]))
 }
 
 /// Where the pictures the static setter showed before our still are kept.
@@ -601,8 +660,10 @@ fn remember_images() {
         return;
     }
     let stills = cache_dir().join("stills");
-    let images: Vec<(String, PathBuf)> =
-        shown_images().into_iter().filter(|(_, image)| !image.starts_with(&stills) && image.is_file()).collect();
+    let images: Vec<(String, PathBuf)> = shown_images()
+        .into_iter()
+        .filter(|(_, image)| !image.starts_with(&stills) && image.is_file())
+        .collect();
     if !images.is_empty()
         && let Ok(text) = serde_json::to_string(&images)
     {
@@ -647,7 +708,13 @@ fn hook(settings: &Settings, wallpaper: &Path, still: Option<&Path>) {
 /// Run a hook with its output in `log`, started anew: what it says is not for
 /// the terminal the daemon was started from, where it would land at every
 /// change of the wallpaper.
-fn run_hook(command: &str, wallpaper: &Path, still: Option<&Path>, title: &str, log: &Path) -> std::io::Result<std::process::ExitStatus> {
+fn run_hook(
+    command: &str,
+    wallpaper: &Path,
+    still: Option<&Path>,
+    title: &str,
+    log: &Path,
+) -> std::io::Result<std::process::ExitStatus> {
     let out = std::fs::File::create(log)?;
     Command::new("sh")
         .arg("-c")
@@ -703,7 +770,12 @@ pub fn video_item(video: &Path) -> Result<PathBuf, String> {
 
 fn lock_file() -> Option<std::fs::File> {
     std::fs::create_dir_all(runtime_dir()).ok()?;
-    std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(runtime_dir().join("daemon.lock")).ok()
+    std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(runtime_dir().join("daemon.lock"))
+        .ok()
 }
 
 /// Start `we-linux daemon` on its own unless one runs already.
@@ -727,7 +799,12 @@ pub fn ensure_daemon() -> Result<(), String> {
 
 /// What a monitor is to show: the wallpaper of its own, else the wallpaper of all.
 fn wanted(desktop: &Desktop, monitor: &str) -> Option<PathBuf> {
-    desktop.outputs.get(monitor).filter(|p| p.is_dir()).or(desktop.wallpaper.as_ref().filter(|p| p.is_dir())).cloned()
+    desktop
+        .outputs
+        .get(monitor)
+        .filter(|p| p.is_dir())
+        .or(desktop.wallpaper.as_ref().filter(|p| p.is_dir()))
+        .cloned()
 }
 
 /// The user's values of a wallpaper's properties, as the renderer takes them.
@@ -761,7 +838,15 @@ fn spawn(settings: &Settings) -> Result<Child, String> {
     let state = dir.join("engine-state.json");
     let _ = std::fs::remove_file(&state);
     let mut command = Command::new(engine);
-    command.arg("-v").arg("daemon").arg("--socket").arg(socket()).arg("--state").arg(state).arg("--assets").arg(assets);
+    command
+        .arg("-v")
+        .arg("daemon")
+        .arg("--socket")
+        .arg(socket())
+        .arg("--state")
+        .arg(state)
+        .arg("--assets")
+        .arg(assets);
     // Its own config file is not ours to read: the settings are told.
     command.arg("--config").arg(dir.join("engine-config.json"));
     for (key, value) in told(settings, false) {
@@ -861,7 +946,8 @@ pub fn errors() -> Vec<(PathBuf, String)> {
 /// Hyprland's event socket: what may change whether a fullscreen window
 /// covers the desktop, or which monitors there are.
 fn watch_hyprland(wake: Sender<()>) {
-    let (Some(runtime), Some(signature)) = (std::env::var_os("XDG_RUNTIME_DIR"), std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE"))
+    let (Some(runtime), Some(signature)) =
+        (std::env::var_os("XDG_RUNTIME_DIR"), std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE"))
     else {
         return;
     };
@@ -870,7 +956,18 @@ fn watch_hyprland(wake: Sender<()>) {
         loop {
             if let Ok(stream) = UnixStream::connect(&socket) {
                 for line in BufReader::new(stream).lines().map_while(Result::ok) {
-                    let relevant = ["fullscreen", "workspace", "focusedmon", "activespecial", "activewindow", "openwindow", "closewindow", "movewindow", "monitoradded", "monitorremoved"];
+                    let relevant = [
+                        "fullscreen",
+                        "workspace",
+                        "focusedmon",
+                        "activespecial",
+                        "activewindow",
+                        "openwindow",
+                        "closewindow",
+                        "movewindow",
+                        "monitoradded",
+                        "monitorremoved",
+                    ];
                     if relevant.iter().any(|e| line.starts_with(e)) && wake.send(()).is_err() {
                         return;
                     }
@@ -885,7 +982,8 @@ fn watch_hyprland(wake: Sender<()>) {
 fn watch_files(wake: Sender<()>) {
     std::thread::spawn(move || {
         let stamp = || {
-            [desktop::desktop_file(), desktop::settings_file()].map(|f| std::fs::metadata(f).and_then(|m| m.modified()).ok())
+            [desktop::desktop_file(), desktop::settings_file()]
+                .map(|f| std::fs::metadata(f).and_then(|m| m.modified()).ok())
         };
         let mut seen = stamp();
         loop {
@@ -963,7 +1061,8 @@ pub fn run_daemon() {
         }
         let desktop = Desktop::load();
         let settings = Settings::load();
-        let live = desktop.wallpaper.as_ref().is_some_and(|p| p.is_dir()) || desktop.outputs.values().any(|p| p.is_dir());
+        let live = desktop.wallpaper.as_ref().is_some_and(|p| p.is_dir())
+            || desktop.outputs.values().any(|p| p.is_dir());
         // Nothing live any more: what was there before comes back.
         if desktop.wallpaper.is_none() && desktop.outputs.is_empty() {
             restore_images();
@@ -985,13 +1084,17 @@ pub fn run_daemon() {
             reported = None;
         }
         let covered = if hyprland() { covered_monitors() } else { Vec::new() };
-        let sound = settings.playback_audio != "run" && others_play_sound(RENDERER.load(std::sync::atomic::Ordering::Relaxed));
-        let playbacks: Vec<(String, Playback)> = covered.iter().map(|(name, over)| (name.clone(), under(&settings, *over, sound))).collect();
+        let sound = settings.playback_audio != "run"
+            && others_play_sound(RENDERER.load(std::sync::atomic::Ordering::Relaxed));
+        let playbacks: Vec<(String, Playback)> =
+            covered.iter().map(|(name, over)| (name.clone(), under(&settings, *over, sound))).collect();
         // Every monitor is to stop: the renderer goes, and its memory with it.
-        let hidden = !playbacks.is_empty() && playbacks.iter().all(|(_, playback)| *playback == Playback::Stop);
+        let hidden =
+            !playbacks.is_empty() && playbacks.iter().all(|(_, playback)| *playback == Playback::Stop);
         // One monitor pausing all of them, one muting all of them.
         let pause_all = playbacks.iter().any(|(_, playback)| *playback == Playback::PauseAll);
-        let muted = playbacks.iter().any(|(_, playback)| *playback == Playback::Mute) || (sound && Playback::from_name(&settings.playback_audio) == Playback::Mute);
+        let muted = playbacks.iter().any(|(_, playback)| *playback == Playback::Mute)
+            || (sound && Playback::from_name(&settings.playback_audio) == Playback::Mute);
 
         // A renderer that went on its own is started again (the compositor
         // may have come back), but not one that goes every time.
@@ -1041,7 +1144,9 @@ pub fn run_daemon() {
             // Settings that changed are told; nothing restarts.
             let now = format!("{:?}", told(&settings, muted));
             if settings_told.as_ref() != Some(&now) {
-                let all = told(&settings, muted).into_iter().all(|(key, value)| call(json!({ "cmd": "set", "path": format!("config/{key}"), "value": value })).is_ok());
+                let all = told(&settings, muted).into_iter().all(|(key, value)| {
+                    call(json!({ "cmd": "set", "path": format!("config/{key}"), "value": value })).is_ok()
+                });
                 if all {
                     settings_told = Some(now);
                 }
@@ -1068,8 +1173,13 @@ pub fn run_daemon() {
                             Ok(_) => {
                                 frozen.remove(&monitor);
                                 // A video's alignment, as the user set it (else the setting).
-                                let fill = properties(&wallpaper).get("alignment").and_then(crate::props::fill_of).map_or(Value::Null, Value::from);
-                                let _ = call(json!({ "cmd": "set", "path": format!("outputs/{monitor}/fill"), "value": fill }));
+                                let fill = properties(&wallpaper)
+                                    .get("alignment")
+                                    .and_then(crate::props::fill_of)
+                                    .map_or(Value::Null, Value::from);
+                                let _ = call(
+                                    json!({ "cmd": "set", "path": format!("outputs/{monitor}/fill"), "value": fill }),
+                                );
                             }
                             Err(_) if SILENT.get() => loading = Some(key),
                             Err(why) => {
@@ -1098,7 +1208,8 @@ pub fn run_daemon() {
                 if frozen.get(monitor).copied().unwrap_or(false) == freeze {
                     continue;
                 }
-                let told = call(json!({ "cmd": if freeze { "pause" } else { "resume" }, "output": monitor })).is_ok();
+                let told = call(json!({ "cmd": if freeze { "pause" } else { "resume" }, "output": monitor }))
+                    .is_ok();
                 // A monitor the renderer does not have yet is told on the next round.
                 if told {
                     frozen.insert(monitor.clone(), freeze);
@@ -1134,7 +1245,8 @@ pub fn run_daemon() {
 
         // Every failure with its wallpaper: who asks about another wallpaper
         // (another monitor's) is not told this one's.
-        let mut errors: Vec<String> = broken.iter().map(|((_, wallpaper), why)| format!("{}\t{why}", wallpaper.display())).collect();
+        let mut errors: Vec<String> =
+            broken.iter().map(|((_, wallpaper), why)| format!("{}\t{why}", wallpaper.display())).collect();
         if let Some(why) = down.as_ref().or(hung.as_ref()) {
             let wallpapers = desktop.wallpaper.iter().chain(desktop.outputs.values());
             errors.extend(wallpapers.map(|wallpaper| format!("{}\t{why}", wallpaper.display())));
@@ -1182,7 +1294,8 @@ pub fn stage(wallpaper: &Path) -> Stage {
 
 /// `we-linux doctor`: what a bug report needs, in one paste.
 pub fn doctor() -> String {
-    let found = |path: Option<PathBuf>| path.map_or_else(|| "NOT FOUND".to_owned(), |p| p.display().to_string());
+    let found =
+        |path: Option<PathBuf>| path.map_or_else(|| "NOT FOUND".to_owned(), |p| p.display().to_string());
     let output = |program: &str, args: &[&str]| {
         Command::new(program)
             .args(args)
@@ -1198,13 +1311,24 @@ pub fn doctor() -> String {
     let libraries = crate::library::libraries();
     let mut out = Vec::new();
     out.push(format!("we-linux {}", env!("CARGO_PKG_VERSION")));
-    out.push(format!("session: {} / {}, WAYLAND_DISPLAY={}", env("XDG_CURRENT_DESKTOP"), env("XDG_SESSION_TYPE"), env("WAYLAND_DISPLAY")));
+    out.push(format!(
+        "session: {} / {}, WAYLAND_DISPLAY={}",
+        env("XDG_CURRENT_DESKTOP"),
+        env("XDG_SESSION_TYPE"),
+        env("WAYLAND_DISPLAY")
+    ));
     if hyprland() {
-        out.push(format!("hyprland: {}", output("hyprctl", &["version"]).unwrap_or_else(|| "hyprctl does not answer".into())));
-        let monitors: Vec<String> = desktop::monitors().into_iter().map(|m| format!("{} {}", m.name, m.detail)).collect();
+        out.push(format!(
+            "hyprland: {}",
+            output("hyprctl", &["version"]).unwrap_or_else(|| "hyprctl does not answer".into())
+        ));
+        let monitors: Vec<String> =
+            desktop::monitors().into_iter().map(|m| format!("{} {}", m.name, m.detail)).collect();
         out.push(format!("monitors: {}", monitors.join(", ")));
     }
-    if let Some(memory) = output("nvidia-smi", &["--query-gpu=name,memory.used,memory.total", "--format=csv,noheader"]) {
+    if let Some(memory) =
+        output("nvidia-smi", &["--query-gpu=name,memory.used,memory.total", "--format=csv,noheader"])
+    {
         out.push(format!("gpu: {memory}"));
     }
     out.push(String::new());
@@ -1212,31 +1336,62 @@ pub fn doctor() -> String {
     if let Some(version) = bin(ENGINE).and_then(|engine| output(&engine.to_string_lossy(), &["--version"])) {
         out.push(format!("  {version}"));
     }
-    out.push(format!("ffmpeg: {}", output("ffmpeg", &["-version"]).unwrap_or_else(|| "NOT FOUND (videos are not optimised for the monitor, no stills of videos)".into())));
-    out.push(format!("steam libraries: {}", if libraries.is_empty() { "NONE FOUND".to_owned() } else { libraries.iter().map(|l| l.display().to_string()).collect::<Vec<_>>().join(", ") }));
+    out.push(format!(
+        "ffmpeg: {}",
+        output("ffmpeg", &["-version"]).unwrap_or_else(|| {
+            "NOT FOUND (videos are not optimised for the monitor, no stills of videos)".into()
+        })
+    ));
+    out.push(format!(
+        "steam libraries: {}",
+        if libraries.is_empty() {
+            "NONE FOUND".to_owned()
+        } else {
+            libraries.iter().map(|l| l.display().to_string()).collect::<Vec<_>>().join(", ")
+        }
+    ));
     out.push(format!("wallpaper engine assets: {}", found(crate::library::assets())));
     out.push(format!("wallpapers on disk: {}", crate::library::installed().len()));
     out.push(String::new());
     let lock = lock_file();
     let daemon = lock.is_some_and(|l| l.try_lock().is_err());
-    out.push(format!("daemon: {}", if daemon { "running" } else { "NOT RUNNING (start it: we-linux daemon)" }));
-    out.push(format!("wallpaper: {}", desktop.wallpaper.as_ref().map_or_else(|| "none".to_owned(), |p| p.display().to_string())));
+    out.push(format!(
+        "daemon: {}",
+        if daemon { "running" } else { "NOT RUNNING (start it: we-linux daemon)" }
+    ));
+    out.push(format!(
+        "wallpaper: {}",
+        desktop.wallpaper.as_ref().map_or_else(|| "none".to_owned(), |p| p.display().to_string())
+    ));
     if let Some(wallpaper) = &desktop.wallpaper {
         let json = project(wallpaper);
-        out.push(format!("  type: {}, title: {}", json["type"].as_str().unwrap_or("scene"), json["title"].as_str().unwrap_or("")));
+        out.push(format!(
+            "  type: {}, title: {}",
+            json["type"].as_str().unwrap_or("scene"),
+            json["title"].as_str().unwrap_or("")
+        ));
     }
     for (name, path) in &desktop.outputs {
         out.push(format!("  {name}: {}", path.display()));
     }
     match call(json!({ "cmd": "version" })) {
         Ok(version) => {
-            out.push(format!("renderer: running, {} on {}", version["version"].as_str().unwrap_or("?"), version["gpu"].as_str().unwrap_or("?")));
+            out.push(format!(
+                "renderer: running, {} on {}",
+                version["version"].as_str().unwrap_or("?"),
+                version["gpu"].as_str().unwrap_or("?")
+            ));
             for (monitor, path) in shown() {
                 out.push(format!("  {monitor} shows {}", path.display()));
             }
             if let Ok(memory) = call(json!({ "cmd": "get", "path": "memory" })) {
                 let mb = |key: &str| memory[key].as_f64().unwrap_or(0.0) / 1048576.0;
-                out.push(format!("  video memory: textures {:.0} MB, buffers {:.0} MB, video {:.0} MB", mb("textures"), mb("buffers"), mb("video")));
+                out.push(format!(
+                    "  video memory: textures {:.0} MB, buffers {:.0} MB, video {:.0} MB",
+                    mb("textures"),
+                    mb("buffers"),
+                    mb("video")
+                ));
             }
         }
         Err(why) => out.push(format!("renderer: {why}")),
@@ -1247,7 +1402,11 @@ pub fn doctor() -> String {
     if !Settings::load().hook.trim().is_empty() {
         out.push(format!("hook output: {}", hook_log().display()));
     }
-    out.push(format!("settings: {}", std::fs::read_to_string(desktop::settings_file()).map_or_else(|_| "(defaults)".to_owned(), |s| s.split_whitespace().collect::<Vec<_>>().join(" "))));
+    out.push(format!(
+        "settings: {}",
+        std::fs::read_to_string(desktop::settings_file())
+            .map_or_else(|_| "(defaults)".to_owned(), |s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+    ));
     if let Ok(log) = std::fs::read_to_string(runtime_dir().join("engine.log")) {
         out.push(String::new());
         out.push("--- renderer log, last lines ---".to_owned());
@@ -1314,7 +1473,9 @@ mod tests {
 
     fn start_hanging(socket: &Path, deaf: bool) -> Child {
         let mut command = Command::new(std::env::current_exe().unwrap());
-        command.args(["--exact", "engine::tests::hanging_renderer", "--ignored", "--nocapture"]).env(HANG_ON, socket);
+        command
+            .args(["--exact", "engine::tests::hanging_renderer", "--ignored", "--nocapture"])
+            .env(HANG_ON, socket);
         if deaf {
             command.env(DEAF, "1");
         }
@@ -1330,7 +1491,10 @@ mod tests {
     #[test]
     fn questions_wait_seconds_and_loading_waits_longer() {
         assert_eq!(patience(&json!({ "cmd": "version" })), Duration::from_secs(5));
-        assert_eq!(patience(&json!({ "cmd": "set", "path": "config/fps", "value": 60 })), Duration::from_secs(5));
+        assert_eq!(
+            patience(&json!({ "cmd": "set", "path": "config/fps", "value": 60 })),
+            Duration::from_secs(5)
+        );
         assert_eq!(patience(&json!({ "cmd": "quit" })), Duration::from_secs(5));
         assert_eq!(patience(&json!({ "cmd": "show", "wallpaper": "/w" })), Duration::from_secs(30));
         assert_eq!(patience(&json!({ "cmd": "snapshot" })), Duration::from_secs(30));
@@ -1351,7 +1515,10 @@ mod tests {
         let listener = UnixListener::bind(&socket).unwrap();
         let held = std::thread::spawn(move || listener.accept().map(|(stream, _)| stream));
         let since = Instant::now();
-        assert_eq!(ask(&socket, &json!({ "cmd": "version" }), Duration::from_millis(300)), Err(Failure::Silent));
+        assert_eq!(
+            ask(&socket, &json!({ "cmd": "version" }), Duration::from_millis(300)),
+            Err(Failure::Silent)
+        );
         assert!(since.elapsed() < Duration::from_secs(2));
         assert!(SILENT.get(), "the daemon's loop is told the renderer hangs");
         drop(held.join());
@@ -1362,7 +1529,9 @@ mod tests {
         let socket = scratch("answer").join("wepaper.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let server = std::thread::spawn(move || {
-            for answer in [r#"{"ok":true,"value":{"version":"1"}}"#, r#"{"ok":false,"error":"no such output"}"#, ""] {
+            for answer in
+                [r#"{"ok":true,"value":{"version":"1"}}"#, r#"{"ok":false,"error":"no such output"}"#, ""]
+            {
                 let (stream, _) = listener.accept().unwrap();
                 let mut line = String::new();
                 BufReader::new(&stream).read_line(&mut line).unwrap();
@@ -1371,8 +1540,14 @@ mod tests {
         });
         let patience = Duration::from_secs(5);
         assert_eq!(ask(&socket, &json!({ "cmd": "version" }), patience), Ok(json!({ "version": "1" })));
-        assert_eq!(ask(&socket, &json!({ "cmd": "hide" }), patience), Err(Failure::Said("no such output".to_owned())));
-        assert_eq!(ask(&socket, &json!({ "cmd": "hide" }), patience), Err(Failure::Said("the renderer gave no answer".to_owned())));
+        assert_eq!(
+            ask(&socket, &json!({ "cmd": "hide" }), patience),
+            Err(Failure::Said("no such output".to_owned()))
+        );
+        assert_eq!(
+            ask(&socket, &json!({ "cmd": "hide" }), patience),
+            Err(Failure::Said("the renderer gave no answer".to_owned()))
+        );
         server.join().unwrap();
         assert!(!SILENT.get());
     }

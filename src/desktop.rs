@@ -108,7 +108,11 @@ pub fn apply(path: &Path) -> Result<(), String> {
         engine::forget_images();
         desktop.save()?;
         engine::announce(path.to_owned());
-        return if engine::show_image(path) { Ok(()) } else { Err("no awww, swww or hyprpaper to show a picture".into()) };
+        return if engine::show_image(path) {
+            Ok(())
+        } else {
+            Err("no awww, swww or hyprpaper to show a picture".into())
+        };
     } else {
         return Err(format!("{}: not a wallpaper folder, a video or a picture", path.display()));
     }
@@ -129,7 +133,10 @@ pub fn apply_to(output: &str, path: &Path) -> Result<(), String> {
             )
             .to_owned()
         } else {
-            crate::tf!("there is no monitor {output}: there are {names}", "монитора {output} нет: есть {names}")
+            crate::tf!(
+                "there is no monitor {output}: there are {names}",
+                "монитора {output} нет: есть {names}"
+            )
         });
     }
     // The engine plays a folder or a video; a picture is the static setter's.
@@ -188,7 +195,13 @@ fn profiles_dir() -> PathBuf {
 /// The saved monitor profiles: what each monitor showed, by name.
 pub fn profiles() -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(profiles_dir())
-        .map(|d| d.flatten().filter_map(|e| e.file_name().to_str().and_then(|n| n.strip_suffix(".json")).map(str::to_owned)).collect())
+        .map(|d| {
+            d.flatten()
+                .filter_map(|e| {
+                    e.file_name().to_str().and_then(|n| n.strip_suffix(".json")).map(str::to_owned)
+                })
+                .collect()
+        })
         .unwrap_or_default();
     names.sort();
     names
@@ -197,7 +210,11 @@ pub fn profiles() -> Vec<String> {
 /// Keep what every monitor shows now under a name.
 pub fn save_profile(name: &str) -> Result<(), String> {
     if name.is_empty() || name.contains('/') {
-        return Err(crate::lang::t("a profile needs a name without \"/\"", "у профиля должно быть имя без «/»").into());
+        return Err(crate::lang::t(
+            "a profile needs a name without \"/\"",
+            "у профиля должно быть имя без «/»",
+        )
+        .into());
     }
     write_json(&profiles_dir().join(format!("{name}.json")), &Desktop::load())
 }
@@ -236,7 +253,11 @@ pub struct Monitor {
 }
 
 pub fn monitors() -> Vec<Monitor> {
-    let hyprland = Command::new("hyprctl").args(["monitors", "-j"]).output().ok().and_then(|out| serde_json::from_slice::<serde_json::Value>(&out.stdout).ok());
+    let hyprland = Command::new("hyprctl")
+        .args(["monitors", "-j"])
+        .output()
+        .ok()
+        .and_then(|out| serde_json::from_slice::<serde_json::Value>(&out.stdout).ok());
     if let Some(list) = hyprland.as_ref().and_then(|json| json.as_array()) {
         return list
             .iter()
@@ -245,7 +266,11 @@ pub fn monitors() -> Vec<Monitor> {
                 let scale = if number("scale") > 0.0 { number("scale") } else { 1.0 };
                 // A monitor turned on its side is as wide as it is tall.
                 let turned = m["transform"].as_i64().unwrap_or(0) % 2 == 1;
-                let (width, height) = if turned { (number("height"), number("width")) } else { (number("width"), number("height")) };
+                let (width, height) = if turned {
+                    (number("height"), number("width"))
+                } else {
+                    (number("width"), number("height"))
+                };
                 Monitor {
                     name: m["name"].as_str().unwrap_or("").to_owned(),
                     detail: format!("{}x{}", width as i64, height as i64),
@@ -263,7 +288,14 @@ pub fn monitors() -> Vec<Monitor> {
     engine::outputs()
         .into_iter()
         .map(|(name, width, height)| {
-            let monitor = Monitor { name, detail: format!("{width}x{height}"), x, y: 0.0, width: width as f32, height: height as f32 };
+            let monitor = Monitor {
+                name,
+                detail: format!("{width}x{height}"),
+                x,
+                y: 0.0,
+                width: width as f32,
+                height: height as f32,
+            };
             x += width as f32;
             monitor
         })
@@ -302,7 +334,9 @@ pub fn copy(text: &str) -> Result<(), String> {
     if let Some(mut pipe) = child.stdin.take() {
         pipe.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
     }
-    child.wait().map_err(|e| e.to_string()).and_then(|status| if status.success() { Ok(()) } else { Err("wl-copy did not take the text".to_owned()) })
+    child.wait().map_err(|e| e.to_string()).and_then(|status| {
+        if status.success() { Ok(()) } else { Err("wl-copy did not take the text".to_owned()) }
+    })
 }
 
 const UNIT: &str = "we-linux.service";
@@ -326,7 +360,11 @@ pub fn set_autostart(on: bool) -> Result<(), String> {
             .stderr(Stdio::null())
             .status()
             .map_err(|e| format!("systemctl: {e}"))?;
-        if status.success() { Ok(()) } else { Err(format!("systemctl --user {} did not work", args.join(" "))) }
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("systemctl --user {} did not work", args.join(" ")))
+        }
     };
     if !on {
         return run(&["disable", UNIT]);
@@ -400,7 +438,10 @@ impl Default for Settings {
 
 impl Settings {
     pub fn load() -> Self {
-        let Some(mut json) = std::fs::read(settings_file()).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()) else {
+        let Some(mut json) = std::fs::read(settings_file())
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        else {
             return Self::default();
         };
         // Written before "Воспроизведение" had the original's choices: what
@@ -472,7 +513,9 @@ impl Playlist {
         let mut names: Vec<String> = std::fs::read_dir(saved_dir())
             .map(|d| {
                 d.flatten()
-                    .filter_map(|e| e.file_name().to_str().and_then(|n| n.strip_suffix(".json")).map(str::to_owned))
+                    .filter_map(|e| {
+                        e.file_name().to_str().and_then(|n| n.strip_suffix(".json")).map(str::to_owned)
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -559,7 +602,9 @@ pub fn run_playlist() {
 /// Ask for a file with the desktop's own dialog (zenity or kdialog): a
 /// picture, or what plays (a video, a wallpaper's project.json).
 pub fn pick_file(picture: bool) -> Result<Option<PathBuf>, String> {
-    let patterns: Vec<String> = if picture { IMAGES.iter().map(|e| format!("*.{e}")).collect() } else {
+    let patterns: Vec<String> = if picture {
+        IMAGES.iter().map(|e| format!("*.{e}")).collect()
+    } else {
         VIDEOS.iter().map(|e| format!("*.{e}")).chain(["project.json".to_owned()]).collect()
     };
     let zenity_filter = format!("--file-filter={}", patterns.join(" "));

@@ -26,7 +26,10 @@ use std::rc::Rc;
 use std::sync::mpsc::Sender;
 
 use serde_json::Value;
-use slint::{Color, ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer, TimerMode, VecModel, Weak};
+use slint::{
+    Color, ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer,
+    TimerMode, VecModel, Weak,
+};
 
 use desktop::{Playlist, Settings};
 use lang::t;
@@ -84,11 +87,13 @@ const ONLY: [(&str, &str); 5] = [
     ("Реагирующие на звук", "Audio responsive"),
     ("Настраиваемый", "Customizable"),
 ];
-const TYPES: [(&str, &str); 4] = [("Сцена", "Scene"), ("Видео", "Video"), ("Веб", "Web"), ("Приложение", "Application")];
+const TYPES: [(&str, &str); 4] =
+    [("Сцена", "Scene"), ("Видео", "Video"), ("Веб", "Web"), ("Приложение", "Application")];
 /// What "Тип" lists after its divider: the categories of the workshop.
 const CATEGORIES: [(&str, &str); 2] = [("Обои", "Wallpaper"), ("Пресет", "Preset")];
 /// "Источник", of the installed only.
-const SOURCES: [(&str, &str); 3] = [("Официальный", "Official"), ("Мастерская", "Workshop"), ("Мои обои", "Local")];
+const SOURCES: [(&str, &str); 3] =
+    [("Официальный", "Official"), ("Мастерская", "Workshop"), ("Мои обои", "Local")];
 const RATINGS: [(&str, &str); 3] = [
     ("0+ (для всех возрастов)", "Everyone"),
     ("12+ (с ограничениями)", "Questionable"),
@@ -100,11 +105,43 @@ const RATINGS_EN: [&str; 3] = ["G - All ages", "PG13 - Parental guidance", "R - 
 /// and English, and its tags); the last group has no title. The original shows
 /// the tags themselves, "Standard Definition" as "SD".
 const RESOLUTION_GROUPS: [(&str, &str, &[&str]); 6] = [
-    ("Широкий экран", "Widescreen", &["Standard Definition", "1280 x 720", "1366 x 768", "1920 x 1080", "2560 x 1440", "3840 x 2160"]),
-    ("Широкий экран «Ультра»", "Ultrawide", &["Ultrawide Standard Definition", "Ultrawide 2560 x 1080", "Ultrawide 3440 x 1440"]),
-    ("Два монитора", "Dual", &["Dual Standard Definition", "Dual 3840 x 1080", "Dual 5120 x 1440", "Dual 7680 x 2160"]),
-    ("Три монитора", "Triple", &["Triple Standard Definition", "Triple 4096 x 768", "Triple 5760 x 1080", "Triple 7680 x 1440", "Triple 11520 x 2160"]),
-    ("Портретная ориентация экрана", "Portrait", &["Portrait Standard Definition", "Portrait 720 x 1280", "Portrait 1080 x 1920", "Portrait 1440 x 2560", "Portrait 2160 x 3840"]),
+    (
+        "Широкий экран",
+        "Widescreen",
+        &["Standard Definition", "1280 x 720", "1366 x 768", "1920 x 1080", "2560 x 1440", "3840 x 2160"],
+    ),
+    (
+        "Широкий экран «Ультра»",
+        "Ultrawide",
+        &["Ultrawide Standard Definition", "Ultrawide 2560 x 1080", "Ultrawide 3440 x 1440"],
+    ),
+    (
+        "Два монитора",
+        "Dual",
+        &["Dual Standard Definition", "Dual 3840 x 1080", "Dual 5120 x 1440", "Dual 7680 x 2160"],
+    ),
+    (
+        "Три монитора",
+        "Triple",
+        &[
+            "Triple Standard Definition",
+            "Triple 4096 x 768",
+            "Triple 5760 x 1080",
+            "Triple 7680 x 1440",
+            "Triple 11520 x 2160",
+        ],
+    ),
+    (
+        "Портретная ориентация экрана",
+        "Portrait",
+        &[
+            "Portrait Standard Definition",
+            "Portrait 720 x 1280",
+            "Portrait 1080 x 1920",
+            "Portrait 1440 x 2560",
+            "Portrait 2160 x 3840",
+        ],
+    ),
     ("", "", &["Dynamic resolution", "Other resolution"]),
 ];
 const GENRES: [(&str, &str); 25] = [
@@ -170,7 +207,13 @@ struct Group {
 }
 
 impl Group {
-    fn new(title: &'static str, kind: GroupKind, open: bool, list: &[(&'static str, &'static str)], default: impl Fn(&str) -> bool) -> Self {
+    fn new(
+        title: &'static str,
+        kind: GroupKind,
+        open: bool,
+        list: &[(&'static str, &'static str)],
+        default: impl Fn(&str) -> bool,
+    ) -> Self {
         Self {
             title,
             kind,
@@ -179,7 +222,15 @@ impl Group {
             boxed: false,
             choices: list
                 .iter()
-                .map(|&(label, tag)| Choice { label, tag, checked: default(tag), default: default(tag), section: 0, installed_only: false, usable: true })
+                .map(|&(label, tag)| Choice {
+                    label,
+                    tag,
+                    checked: default(tag),
+                    default: default(tag),
+                    section: 0,
+                    installed_only: false,
+                    usable: true,
+                })
                 .collect(),
         }
     }
@@ -221,13 +272,29 @@ fn default_groups() -> Vec<Group> {
     for choice in &mut kinds.choices {
         choice.installed_only = choice.tag == "Application";
     }
-    kinds.choices.extend(CATEGORIES.iter().map(|&(label, tag)| Choice { label, tag, checked: true, default: true, section: 1, installed_only: false, usable: true }));
+    kinds.choices.extend(CATEGORIES.iter().map(|&(label, tag)| Choice {
+        label,
+        tag,
+        checked: true,
+        default: true,
+        section: 1,
+        installed_only: false,
+        usable: true,
+    }));
     let resolutions = Group {
         choices: RESOLUTION_GROUPS
             .iter()
             .enumerate()
             .flat_map(|(section, (_, _, tags))| {
-                tags.iter().map(move |&tag| Choice { label: tag, tag, checked: true, default: true, section, installed_only: false, usable: true })
+                tags.iter().map(move |&tag| Choice {
+                    label: tag,
+                    tag,
+                    checked: true,
+                    default: true,
+                    section,
+                    installed_only: false,
+                    usable: true,
+                })
             })
             .collect(),
         ..Group::new("Разрешение экрана", GroupKind::AnyOf, false, &[], |_| true)
@@ -240,7 +307,9 @@ fn default_groups() -> Vec<Group> {
         only,
         kinds,
         // Like the Windows client: adult content is opt-in.
-        Group::new("Возрастной рейтинг", GroupKind::AnyOf, false, &RATINGS, |tag| tag != "Mature"),
+        Group::new("Возрастной рейтинг", GroupKind::AnyOf, false, &RATINGS, |tag| {
+            tag != "Mature"
+        }),
         resolutions,
         sources,
         Group::new("Метки", GroupKind::AnyOf, true, &GENRES, |_| true),
@@ -434,7 +503,8 @@ fn megabytes(bytes: u64) -> String {
 
 /// What the settings' "About" tab says.
 fn about() -> String {
-    let renderer = engine::bin("wepaper").map_or_else(|| t("not found", "не найден").to_owned(), |path| path.display().to_string());
+    let renderer = engine::bin("wepaper")
+        .map_or_else(|| t("not found", "не найден").to_owned(), |path| path.display().to_string());
     [
         format!("WE Linux {}", env!("CARGO_PKG_VERSION")),
         t(
@@ -464,7 +534,9 @@ fn about() -> String {
 }
 
 fn label_of(list: &[(&'static str, &'static str)], tag: &str) -> Option<&'static str> {
-    list.iter().find(|(_, t)| t.eq_ignore_ascii_case(tag)).map(|(label, tag)| if lang::russian() { *label } else { *tag })
+    list.iter()
+        .find(|(_, t)| t.eq_ignore_ascii_case(tag))
+        .map(|(label, tag)| if lang::russian() { *label } else { *tag })
 }
 
 /// A workshop tag as the original names it where it translates tags: the
@@ -491,7 +563,11 @@ fn tag_label(tag: &str) -> Option<&'static str> {
 fn search_words(text: &str) -> (String, Vec<&'static str>) {
     let mut text: String = text.to_lowercase().chars().filter(|c| !matches!(c, '?' | '.' | '!')).collect();
     let mut tags = Vec::new();
-    for (words, tag) in [(&["hdr"][..], "HDR"), (&["3d"][..], "3D"), (&["puppet warp", "puppetwarp", "puppet"][..], "Puppet Warp")] {
+    for (words, tag) in [
+        (&["hdr"][..], "HDR"),
+        (&["3d"][..], "3D"),
+        (&["puppet warp", "puppetwarp", "puppet"][..], "Puppet Warp"),
+    ] {
         for word in words {
             let found = text.split_whitespace().collect::<Vec<_>>().join(" ");
             let padded = format!(" {found} ");
@@ -542,10 +618,16 @@ fn edits(a: &str, b: &str) -> usize {
 /// drawn small, softened, and scaled back up by the image itself.
 fn blurred(shot: &SharedPixelBuffer<Rgba8Pixel>) -> Image {
     let (width, height) = (shot.width(), shot.height());
-    let Some(full) = image::RgbaImage::from_raw(width, height, shot.as_bytes().to_vec()) else { return Image::default() };
+    let Some(full) = image::RgbaImage::from_raw(width, height, shot.as_bytes().to_vec()) else {
+        return Image::default();
+    };
     let small = image::imageops::thumbnail(&full, (width / 8).max(1), (height / 8).max(1));
     let soft = image::imageops::blur(&small, 1.5);
-    Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(soft.as_raw(), soft.width(), soft.height()))
+    Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+        soft.as_raw(),
+        soft.width(),
+        soft.height(),
+    ))
 }
 
 /// A row of the settings' "Воспроизведение".
@@ -668,7 +750,11 @@ impl App {
                 .iter()
                 .map(|g| (g.title.to_owned(), g.checked().iter().map(|t| (*t).to_owned()).collect()))
                 .collect(),
-            filter_tags: self.groups.iter().map(|g| (g.title.to_owned(), g.choices.iter().map(|c| c.tag.to_owned()).collect())).collect(),
+            filter_tags: self
+                .groups
+                .iter()
+                .map(|g| (g.title.to_owned(), g.choices.iter().map(|c| c.tag.to_owned()).collect()))
+                .collect(),
             hidden_groups: self.groups.iter().filter(|g| !g.shown).map(|g| g.title.to_owned()).collect(),
             favorites,
             language: self.language.clone(),
@@ -698,7 +784,9 @@ impl App {
             // tags they knew) do not fit them: the groups start as they come.
             if let Some(checked) = saved.filters.get(group.title).filter(|_| !saved.filter_tags.is_empty()) {
                 let known = saved.filter_tags.get(group.title);
-                for choice in group.choices.iter_mut().filter(|c| known.is_none_or(|k| k.iter().any(|t| t == c.tag))) {
+                for choice in
+                    group.choices.iter_mut().filter(|c| known.is_none_or(|k| k.iter().any(|t| t == c.tag)))
+                {
                     choice.checked = checked.iter().any(|t| t == choice.tag);
                 }
             }
@@ -729,19 +817,30 @@ impl App {
             .map(|g| {
                 let mut options = Vec::new();
                 let mut section = 0;
-                for (index, c) in g.choices.iter().enumerate().filter(|(_, c)| installed || !c.installed_only) {
+                for (index, c) in g.choices.iter().enumerate().filter(|(_, c)| installed || !c.installed_only)
+                {
                     // A divider before "Тип"'s categories; a heading with "Все" and
                     // "Ничего" before each sub-group of the resolutions.
-                    if c.section != section || (index == 0 && g.title == "Разрешение экрана") {
+                    if c.section != section || (index == 0 && g.title == "Разрешение экрана")
+                    {
                         section = c.section;
-                        let heading = RESOLUTION_GROUPS.get(c.section).filter(|_| g.title == "Разрешение экрана").map_or("", |(ru, en, _)| if lang::russian() { ru } else { en });
+                        let heading = RESOLUTION_GROUPS
+                            .get(c.section)
+                            .filter(|_| g.title == "Разрешение экрана")
+                            .map_or("", |(ru, en, _)| if lang::russian() { ru } else { en });
                         if g.title == "Разрешение экрана" && index > 0 {
                             options.push(FilterOption { kind: 1, choice: -1, ..Default::default() });
                         }
                         if g.title == "Тип" {
                             options.push(FilterOption { kind: 1, choice: -1, ..Default::default() });
                         } else if !heading.is_empty() {
-                            options.push(FilterOption { label: heading.into(), kind: 2, section: c.section as i32, choice: -1, ..Default::default() });
+                            options.push(FilterOption {
+                                label: heading.into(),
+                                kind: 2,
+                                section: c.section as i32,
+                                choice: -1,
+                                ..Default::default()
+                            });
                         }
                     }
                     let label = if g.title == "Разрешение экрана" {
@@ -818,14 +917,20 @@ impl App {
             };
             ui.set_sort_options(ModelRc::new(VecModel::from(sorts)));
             ui.set_sort_index(if self.online() { self.workshop_sort } else { self.local_sort } as i32);
-            ui.set_search(if self.online() { self.workshop_search.as_str() } else { self.local_search.as_str() }.into());
+            ui.set_search(
+                if self.online() { self.workshop_search.as_str() } else { self.local_search.as_str() }.into(),
+            );
             ui.set_workshop_sorting(self.online());
             ui.set_icon_size(self.icon_size);
             let author = self.author.filter(|_| self.tab == WORKSHOP);
-            ui.set_notice(author.map_or_else(String::new, |owner| {
-                let name = self.personas.get(&owner).map_or("?", |(name, _)| name.as_str());
-                tf!("Browsing wallpapers by {name}", "Смотрим все обои от {name}")
-            }).into());
+            ui.set_notice(
+                author
+                    .map_or_else(String::new, |owner| {
+                        let name = self.personas.get(&owner).map_or("?", |(name, _)| name.as_str());
+                        tf!("Browsing wallpapers by {name}", "Смотрим все обои от {name}")
+                    })
+                    .into(),
+            );
         }
         // Which groups there are depends on the tab.
         self.show_groups();
@@ -866,14 +971,28 @@ impl App {
             ui.set_pages(ModelRc::new(VecModel::from(Vec::<PageButton>::new())));
         }
         // What the filters leave out stays out (the ratings above all).
-        let rating: Vec<String> = self.groups.iter().find(|g| g.title == "Возрастной рейтинг").map(|g| g.checked().iter().map(|t| (*t).to_owned()).collect()).unwrap_or_default();
+        let rating: Vec<String> = self
+            .groups
+            .iter()
+            .find(|g| g.title == "Возрастной рейтинг")
+            .map(|g| g.checked().iter().map(|t| (*t).to_owned()).collect())
+            .unwrap_or_default();
         for (sort, days, tags) in rows.into_iter().map(|(_, sort, days, tags)| (sort, days, tags)) {
             self.generation += 1;
             let mut groups = vec![rating.clone()];
             if !tags.is_empty() {
                 groups.push(tags);
             }
-            let query = steam::Query { sort, text: String::new(), page: 1, groups, required: Vec::new(), excluded: Vec::new(), trend_days: days.max(1), author: 0 };
+            let query = steam::Query {
+                sort,
+                text: String::new(),
+                page: 1,
+                groups,
+                required: Vec::new(),
+                excluded: Vec::new(),
+                trend_days: days.max(1),
+                author: 0,
+            };
             let _ = self.steam.send(Command::Query { generation: self.generation, query });
         }
     }
@@ -887,7 +1006,11 @@ impl App {
             .explore
             .iter()
             .map(|(title, cards)| {
-                let row = ExploreRow { title: title.as_str().into(), first: first as i32, count: cards.len() as i32 };
+                let row = ExploreRow {
+                    title: title.as_str().into(),
+                    first: first as i32,
+                    count: cards.len() as i32,
+                };
                 first += cards.len();
                 row
             })
@@ -927,14 +1050,20 @@ impl App {
             .filter(|g| !g.boxed && g.applies(true))
             .flat_map(|g| g.choices.iter().filter(|c| !c.checked).map(|c| c.tag))
             .collect();
-        let only: Vec<&'static str> = self.groups.iter().filter(|g| g.boxed).flat_map(|g| g.choices.iter().filter(|c| c.checked && c.usable).map(|c| c.tag)).collect();
+        let only: Vec<&'static str> = self
+            .groups
+            .iter()
+            .filter(|g| g.boxed)
+            .flat_map(|g| g.choices.iter().filter(|c| c.checked && c.usable).map(|c| c.tag))
+            .collect();
         let (words, special) = search_words(&self.local_search);
         let favorites = &self.favorites;
         let mut cards: Vec<Card> = self
             .installed
             .iter()
             .filter(|item| {
-                let workshop_tags = self.workshop_info.get(&item.id).map(|e| e.tags.as_slice()).unwrap_or(&[]);
+                let workshop_tags =
+                    self.workshop_info.get(&item.id).map(|e| e.tags.as_slice()).unwrap_or(&[]);
                 let carries = |tag: &str| {
                     has_tag(&item.tags, tag)
                         || has_tag(workshop_tags, tag)
@@ -996,10 +1125,17 @@ impl App {
             ui.set_error("".into());
             let buttons = if shown > per_page { page_buttons(self.page, pages) } else { Vec::new() };
             ui.set_pages(ModelRc::new(VecModel::from(buttons)));
-            ui.set_filter_count(if shown != all { tf!("({} of {})", "({} из {})", shown, all) } else { String::new() }.into());
+            ui.set_filter_count(
+                if shown != all { tf!("({} of {})", "({} из {})", shown, all) } else { String::new() }.into(),
+            );
         }
         // The details only the workshop has (votes, size, author), once.
-        let unknown: Vec<u64> = self.installed.iter().map(|i| i.id).filter(|id| !self.workshop_info.contains_key(id) && !self.asked_details.contains(id)).collect();
+        let unknown: Vec<u64> = self
+            .installed
+            .iter()
+            .map(|i| i.id)
+            .filter(|id| !self.workshop_info.contains_key(id) && !self.asked_details.contains(id))
+            .collect();
         if !unknown.is_empty() {
             self.asked_details.extend(unknown.iter().copied());
             let _ = self.steam.send(Command::Details(unknown));
@@ -1046,14 +1182,21 @@ impl App {
                 // Each part of "Тип" (the kinds, the categories) is a choice of its own.
                 GroupKind::AnyOf if group.title == "Тип" => {
                     for section in 0..2 {
-                        let part: Vec<&Choice> = group.choices_for(false).filter(|c| c.section == section).collect();
+                        let part: Vec<&Choice> =
+                            group.choices_for(false).filter(|c| c.section == section).collect();
                         if part.iter().any(|c| !c.checked) {
-                            query.groups.push(part.iter().filter(|c| c.checked).map(|c| c.tag.to_owned()).collect());
+                            query
+                                .groups
+                                .push(part.iter().filter(|c| c.checked).map(|c| c.tag.to_owned()).collect());
                         }
                     }
                 }
-                GroupKind::AnyOf => query.groups.push(group.choices_for(false).filter(|c| c.checked).map(|c| c.tag.to_owned()).collect()),
-                GroupKind::AllOf => query.required.extend(group.choices_for(false).filter(|c| c.checked && c.usable).map(|c| c.tag.to_owned())),
+                GroupKind::AnyOf => query
+                    .groups
+                    .push(group.choices_for(false).filter(|c| c.checked).map(|c| c.tag.to_owned()).collect()),
+                GroupKind::AllOf => query.required.extend(
+                    group.choices_for(false).filter(|c| c.checked && c.usable).map(|c| c.tag.to_owned()),
+                ),
             }
         }
         if self.tab == RECOMMENDED {
@@ -1072,9 +1215,16 @@ impl App {
     fn page_arrived(&mut self, generation: u64, result: Result<steam::Page, String>) {
         // A row of "Рекомендации".
         if self.tab == RECOMMENDED {
-            let Some(row) = generation.checked_sub(self.explore_base).map(|r| r as usize).filter(|r| *r < self.explore.len()) else { return };
+            let Some(row) = generation
+                .checked_sub(self.explore_base)
+                .map(|r| r as usize)
+                .filter(|r| *r < self.explore.len())
+            else {
+                return;
+            };
             if let Ok(page) = result {
-                let cards: Vec<Card> = page.entries.into_iter().take(EXPLORE_ROW).map(|e| self.card_of(e)).collect();
+                let cards: Vec<Card> =
+                    page.entries.into_iter().take(EXPLORE_ROW).map(|e| self.card_of(e)).collect();
                 self.explore[row].1 = cards;
                 self.show_explore();
             }
@@ -1107,7 +1257,9 @@ impl App {
 
     /// A wallpaper of the workshop as a cell of the grid.
     fn card_of(&self, e: steam::Entry) -> Card {
-        let find = |list: &[(&'static str, &'static str)]| e.tags.iter().find(|t| label_of(list, t).is_some()).cloned().unwrap_or_default();
+        let find = |list: &[(&'static str, &'static str)]| {
+            e.tags.iter().find(|t| label_of(list, t).is_some()).cloned().unwrap_or_default()
+        };
         Card {
             id: e.id,
             title: e.title.clone(),
@@ -1117,7 +1269,11 @@ impl App {
             up: e.up,
             down: e.down,
             updated: u64::from(e.updated),
-            picture: if e.preview_url.is_empty() { Picture::None } else { Picture::Url(e.preview_url.clone()) },
+            picture: if e.preview_url.is_empty() {
+                Picture::None
+            } else {
+                Picture::Url(e.preview_url.clone())
+            },
             dir: self.installed.iter().find(|i| i.id == e.id).map(|i| i.dir.clone()),
             owner: e.owner,
             tags: e.tags,
@@ -1150,7 +1306,14 @@ impl App {
                 Picture::File(path) => Source::File(path.clone()),
                 Picture::None => continue,
             };
-            self.previews.request(Job { id: card.id, source, size: 268, generation: self.picture_generation, large: false, animate: false });
+            self.previews.request(Job {
+                id: card.id,
+                source,
+                size: 268,
+                generation: self.picture_generation,
+                large: false,
+                animate: false,
+            });
         }
         self.cells.clear();
         self.animations_asked.clear();
@@ -1163,7 +1326,8 @@ impl App {
     }
 
     fn picture_arrived(&mut self, picture: Decoded) {
-        let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&picture.rgba, picture.width, picture.height);
+        let buffer =
+            SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&picture.rgba, picture.width, picture.height);
         let image = Image::from_rgba8(buffer);
         if picture.large {
             if let (Some(ui), Some(card)) = (self.ui(), self.selected.and_then(|i| self.cards.get(i)))
@@ -1174,7 +1338,11 @@ impl App {
                 // An animated preview plays, as in the Windows client.
                 self.frames = std::iter::once((image, picture.delay))
                     .chain(picture.frames.into_iter().map(|(rgba, delay)| {
-                        let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&rgba, picture.width, picture.height);
+                        let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+                            &rgba,
+                            picture.width,
+                            picture.height,
+                        );
                         (Image::from_rgba8(buffer), delay)
                     }))
                     .collect();
@@ -1216,7 +1384,12 @@ impl App {
             let (width, height) = (picture.width, picture.height);
             let frames: Vec<(Image, u32)> = std::iter::once((image.clone(), picture.delay))
                 .chain(picture.frames.into_iter().map(|(rgba, delay)| {
-                    (Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&rgba, width, height)), delay)
+                    (
+                        Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+                            &rgba, width, height,
+                        )),
+                        delay,
+                    )
                 }))
                 .collect();
             let due = std::time::Instant::now() + std::time::Duration::from_millis(u64::from(picture.delay));
@@ -1239,7 +1412,8 @@ impl App {
 
     fn animate_visible(&mut self) {
         let (first, last) = self.visible;
-        let shown: HashSet<u64> = self.cards.iter().skip(first).take(last.saturating_sub(first)).map(|c| c.id).collect();
+        let shown: HashSet<u64> =
+            self.cards.iter().skip(first).take(last.saturating_sub(first)).map(|c| c.id).collect();
         self.cells.retain(|id, _| shown.contains(id));
         // A cell out of view asks again when it comes back.
         self.animations_asked.retain(|id| shown.contains(id));
@@ -1253,7 +1427,14 @@ impl App {
                 Picture::File(path) => Source::File(path.clone()),
                 Picture::None => continue,
             };
-            self.previews.request(Job { id: card.id, source, size: 240, generation, large: false, animate: true });
+            self.previews.request(Job {
+                id: card.id,
+                source,
+                size: 240,
+                generation,
+                large: false,
+                animate: true,
+            });
         }
     }
 
@@ -1313,15 +1494,19 @@ impl App {
     }
 
     fn arm_frame(&mut self, delay: u32) {
-        self.frame_timer.start(TimerMode::SingleShot, std::time::Duration::from_millis(u64::from(delay)), || {
-            APP.with(|slot| {
-                if let Some(app) = slot.borrow().as_ref()
-                    && let Ok(mut app) = app.try_borrow_mut()
-                {
-                    app.next_frame();
-                }
-            });
-        });
+        self.frame_timer.start(
+            TimerMode::SingleShot,
+            std::time::Duration::from_millis(u64::from(delay)),
+            || {
+                APP.with(|slot| {
+                    if let Some(app) = slot.borrow().as_ref()
+                        && let Ok(mut app) = app.try_borrow_mut()
+                    {
+                        app.next_frame();
+                    }
+                });
+            },
+        );
     }
 
     /// Bring the marks of every cell (subscribed, on the desktop, progress) up to date.
@@ -1407,7 +1592,19 @@ impl App {
         ui.set_sel_facts(facts.join("  ").into());
         // The tags the workshop has, in its order, without the ones that say
         // what it is; genres, the box's tags and the ratings translated.
-        const NOT_SHOWN: [&str; 11] = ["Wallpaper", "Preset", "Web", "Video", "Scene", "Application", "Approved", "Multi-monitor optimized", "Workshop", "Official", "Local"];
+        const NOT_SHOWN: [&str; 11] = [
+            "Wallpaper",
+            "Preset",
+            "Web",
+            "Video",
+            "Scene",
+            "Application",
+            "Approved",
+            "Multi-monitor optimized",
+            "Workshop",
+            "Official",
+            "Local",
+        ];
         let mut tags: Vec<String> = info.map_or_else(|| card.tags.clone(), |e| e.tags.clone());
         if info.is_none() && !card.rating.is_empty() && !tags.contains(&card.rating) {
             tags.push(card.rating.clone());
@@ -1433,7 +1630,8 @@ impl App {
                 row.push(pill.into());
             }
         }
-        let rows: Vec<ModelRc<SharedString>> = rows.into_iter().map(|row| ModelRc::new(VecModel::from(row))).collect();
+        let rows: Vec<ModelRc<SharedString>> =
+            rows.into_iter().map(|row| ModelRc::new(VecModel::from(row))).collect();
         ui.set_sel_tags(ModelRc::new(VecModel::from(rows)));
         self.mark_playlist();
         ui.set_sel_workshop(card.id != 0);
@@ -1452,7 +1650,14 @@ impl App {
             Picture::File(path) => Source::File(path.clone()),
             Picture::None => return,
         };
-        self.previews.request(Job { id: card.id, source, size: 400, generation: 0, large: true, animate: true });
+        self.previews.request(Job {
+            id: card.id,
+            source,
+            size: 400,
+            generation: 0,
+            large: true,
+            animate: true,
+        });
     }
 
     fn select(&mut self, index: usize) {
@@ -1472,9 +1677,11 @@ impl App {
     /// What the monitor wallpapers are being set on shows now.
     fn on_target(&self) -> Option<PathBuf> {
         match &self.monitor {
-            Some(name) => {
-                desktop::outputs().into_iter().find(|(output, _)| output == name).map(|(_, path)| path).or_else(|| self.current.clone())
-            }
+            Some(name) => desktop::outputs()
+                .into_iter()
+                .find(|(output, _)| output == name)
+                .map(|(_, path)| path)
+                .or_else(|| self.current.clone()),
             None => self.current.clone(),
         }
     }
@@ -1526,9 +1733,17 @@ impl App {
                 }
                 .into(),
                 options: ModelRc::new(VecModel::from(
-                    property.options.iter().map(|(label, _)| SharedString::from(label.as_str())).collect::<Vec<_>>(),
+                    property
+                        .options
+                        .iter()
+                        .map(|(label, _)| SharedString::from(label.as_str()))
+                        .collect::<Vec<_>>(),
                 )),
-                index: property.options.iter().position(|(_, v)| props::same(v, value)).map_or(-1, |i| i as i32),
+                index: property
+                    .options
+                    .iter()
+                    .position(|(_, v)| props::same(v, value))
+                    .map_or(-1, |i| i as i32),
                 swatch: Color::from_rgb_u8(r, g, b),
                 usable: property.usable,
                 hint: property.hint.as_str().into(),
@@ -1542,7 +1757,10 @@ impl App {
     /// that play this wallpaper (on every monitor or on one) and redraw.
     fn set_property(&mut self, row: usize, value: Value) {
         let Some(card) = self.selected_card() else { return };
-        let Some(property) = self.shown_properties.get(row).and_then(|&i| self.properties.get(i)).cloned() else { return };
+        let Some(property) = self.shown_properties.get(row).and_then(|&i| self.properties.get(i)).cloned()
+        else {
+            return;
+        };
         if props::same(&value, &property.default) {
             self.overrides.remove(&property.name);
         } else {
@@ -1601,11 +1819,14 @@ impl App {
         // "On the desktop" is said when the engine shows it (show_applying).
         let result = match &self.monitor {
             Some(output) => desktop::apply_to(output, &dir),
-            None => desktop::clear_outputs().and_then(|()| desktop::apply(&dir)).map(|()| self.current = Some(dir.clone())),
+            None => desktop::clear_outputs()
+                .and_then(|()| desktop::apply(&dir))
+                .map(|()| self.current = Some(dir.clone())),
         };
         match result {
             Ok(()) => {
-                self.applying = Some((card.title.clone(), self.monitor.clone(), dir, std::time::Instant::now()));
+                self.applying =
+                    Some((card.title.clone(), self.monitor.clone(), dir, std::time::Instant::now()));
                 self.show_applying();
             }
             Err(e) => self.status(tf!("That did not work: {e}", "Не получилось: {e}")),
@@ -1622,14 +1843,16 @@ impl App {
             engine::Stage::Shown => {
                 self.applying = None;
                 match monitor {
-                    Some(output) => self.status(tf!("\"{title}\" is on monitor {output}", "«{title}» на мониторе {output}")),
+                    Some(output) => self
+                        .status(tf!("\"{title}\" is on monitor {output}", "«{title}» на мониторе {output}")),
                     None => self.status(tf!("\"{title}\" is on the desktop", "«{title}» на рабочем столе")),
                 }
             }
             engine::Stage::Failed(error) => {
                 self.applying = None;
                 let error = if error.contains("video memory") {
-                    t("not enough video memory for this wallpaper", "этим обоям не хватает видеопамяти").to_owned()
+                    t("not enough video memory for this wallpaper", "этим обоям не хватает видеопамяти")
+                        .to_owned()
                 } else {
                     error
                 };
@@ -1637,7 +1860,10 @@ impl App {
             }
             _ if waited > 180 => {
                 self.applying = None;
-                self.status(tf!("\"{title}\" is taking too long: see `we-linux doctor`", "«{title}» грузятся слишком долго: смотри `we-linux doctor`"));
+                self.status(tf!(
+                    "\"{title}\" is taking too long: see `we-linux doctor`",
+                    "«{title}» грузятся слишком долго: смотри `we-linux doctor`"
+                ));
             }
             engine::Stage::Loading => self.status(tf!("\"{title}\": loading…", "«{title}»: загрузка…")),
         }
@@ -1703,32 +1929,81 @@ impl App {
         let mut entries = Vec::new();
         if !downloadable {
             if dir.as_ref().is_some_and(|d| self.playlist.items.contains(d)) {
-                entries.push(line(t("Remove from playlist", "Удалить из плейлиста"), icons.get_minus(), "playlist-remove", true));
+                entries.push(line(
+                    t("Remove from playlist", "Удалить из плейлиста"),
+                    icons.get_minus(),
+                    "playlist-remove",
+                    true,
+                ));
             } else {
-                entries.push(line(t("Add to playlist", "Добавить в плейлист"), icons.get_plus(), "playlist-add", dir.is_some()));
+                entries.push(line(
+                    t("Add to playlist", "Добавить в плейлист"),
+                    icons.get_plus(),
+                    "playlist-add",
+                    dir.is_some(),
+                ));
             }
         }
         if card.id != 0 {
             if downloadable {
-                entries.push(line(t("Subscribe", "Подписаться"), icons.get_download(), "subscribe", self.steam_ok));
+                entries.push(line(
+                    t("Subscribe", "Подписаться"),
+                    icons.get_download(),
+                    "subscribe",
+                    self.steam_ok,
+                ));
             } else {
-                entries.push(line(t("Unsubscribe", "Отписаться"), icons.get_xmark(), "unsubscribe", self.steam_ok));
+                entries.push(line(
+                    t("Unsubscribe", "Отписаться"),
+                    icons.get_xmark(),
+                    "unsubscribe",
+                    self.steam_ok,
+                ));
             }
             if self.favorites.contains(&card.id) {
-                entries.push(line(t("Remove from Favorites", "Удалить из избранного"), icons.get_heart_regular(), "unfavorite", true));
+                entries.push(line(
+                    t("Remove from Favorites", "Удалить из избранного"),
+                    icons.get_heart_regular(),
+                    "unfavorite",
+                    true,
+                ));
             } else {
-                entries.push(line(t("Add to Favorites", "Добавить в избранное"), icons.get_heart(), "favorite", true));
+                entries.push(line(
+                    t("Add to Favorites", "Добавить в избранное"),
+                    icons.get_heart(),
+                    "favorite",
+                    true,
+                ));
             }
             entries.push(divider());
-            entries.push(line(t("Open in Workshop", "Открыть в Мастерской"), icons.get_steam(), "workshop", true));
+            entries.push(line(
+                t("Open in Workshop", "Открыть в Мастерской"),
+                icons.get_steam(),
+                "workshop",
+                true,
+            ));
             entries.push(submenu(t("Related Wallpapers", "Связанные обои"), icons.get_image(), 0));
-            entries.push(submenu(t("Report & Block", "Пожаловаться и заблокировать"), icons.get_triangle_exclamation(), 1));
+            entries.push(submenu(
+                t("Report & Block", "Пожаловаться и заблокировать"),
+                icons.get_triangle_exclamation(),
+                1,
+            ));
         }
         if let Some(_dir) = &dir {
             entries.push(divider());
             // A key that sets the wallpaper from anywhere is the compositor's to bind.
-            entries.push(line(t("Assign Hotkey", "Назначить горячую клавишу"), icons.get_keyboard(), "hotkey", false));
-            entries.push(line(t("Open in Explorer", "Открыть в Проводнике"), icons.get_folder_open(), "folder", true));
+            entries.push(line(
+                t("Assign Hotkey", "Назначить горячую клавишу"),
+                icons.get_keyboard(),
+                "hotkey",
+                false,
+            ));
+            entries.push(line(
+                t("Open in Explorer", "Открыть в Проводнике"),
+                icons.get_folder_open(),
+                "folder",
+                true,
+            ));
             entries.push(submenu(t("Play in Window", "Воспроизвести в окне"), icons.get_window_restore(), 2));
         }
         entries.push(divider());
@@ -1739,7 +2014,12 @@ impl App {
         if owner != 0 && !self.personas.contains_key(&owner) {
             let _ = self.steam.send(Command::Persona(owner));
         }
-        let related = vec![line(&tf!("Browse all by {author} (?)", "Просмотреть всё от {author} (?)"), icons.get_user(), "author", owner != 0 && self.steam_ok)];
+        let related = vec![line(
+            &tf!("Browse all by {author} (?)", "Просмотреть всё от {author} (?)"),
+            icons.get_user(),
+            "author",
+            owner != 0 && self.steam_ok,
+        )];
         let report = vec![
             line(t("Report", "Сообщить"), icons.get_triangle_exclamation(), "report", true),
             line(&tf!("Block {author}", "Заблок. {author}"), icons.get_user_slash(), "block", false),
@@ -1749,23 +2029,50 @@ impl App {
             line(t("Full HD Preview", "Предпросмотр, Full HD"), icons.get_computer(), "", false),
             line(t("Phone Preview", "Предпросмотр, телефон"), icons.get_mobile_screen_button(), "", false),
             divider(),
-            line(t("Maximized Preview", "Предпросмотр, на весь экран"), icons.get_window_maximize(), "", false),
+            line(
+                t("Maximized Preview", "Предпросмотр, на весь экран"),
+                icons.get_window_maximize(),
+                "",
+                false,
+            ),
         ];
         let checked = |entry: MenuEntry, on: bool| MenuEntry { checked: on, ..entry };
         let mut view = vec![
-            checked(line(t("Small Icons", "Маленькие значки"), Glyph::default(), "icons-0", true), self.icon_size == 0),
-            checked(line(t("Medium Icons", "Средние значки"), Glyph::default(), "icons-1", true), self.icon_size == 1),
-            checked(line(t("Large Icons", "Большие значки"), Glyph::default(), "icons-2", true), self.icon_size == 2),
+            checked(
+                line(t("Small Icons", "Маленькие значки"), Glyph::default(), "icons-0", true),
+                self.icon_size == 0,
+            ),
+            checked(
+                line(t("Medium Icons", "Средние значки"), Glyph::default(), "icons-1", true),
+                self.icon_size == 1,
+            ),
+            checked(
+                line(t("Large Icons", "Большие значки"), Glyph::default(), "icons-2", true),
+                self.icon_size == 2,
+            ),
         ];
         if self.tab == INSTALLED {
             view.push(divider());
             for n in [50, 100, 200] {
-                view.push(checked(line(&tf!("{n} per page", "{n} на страницу"), Glyph::default(), &format!("per-page-{n}"), true), self.per_page == n));
+                view.push(checked(
+                    line(
+                        &tf!("{n} per page", "{n} на страницу"),
+                        Glyph::default(),
+                        &format!("per-page-{n}"),
+                        true,
+                    ),
+                    self.per_page == n,
+                ));
             }
         }
         let model = |list: Vec<MenuEntry>| ModelRc::new(VecModel::from(list));
         ui.set_context_entries(model(entries));
-        ui.set_context_submenus(ModelRc::new(VecModel::from(vec![model(related), model(report), model(window), model(view)])));
+        ui.set_context_submenus(ModelRc::new(VecModel::from(vec![
+            model(related),
+            model(report),
+            model(window),
+            model(view),
+        ])));
     }
 
     /// A line of a tile's menu was picked.
@@ -1789,7 +2096,11 @@ impl App {
             }
             "subscribe" | "unsubscribe" => {
                 if self.busy.insert(card.id) {
-                    let _ = self.steam.send(if id == "subscribe" { Command::Subscribe(card.id) } else { Command::Unsubscribe(card.id) });
+                    let _ = self.steam.send(if id == "subscribe" {
+                        Command::Subscribe(card.id)
+                    } else {
+                        Command::Unsubscribe(card.id)
+                    });
                     self.refresh_marks();
                 }
             }
@@ -1895,10 +2206,10 @@ impl App {
         let Some(ui) = self.ui() else { return };
         let overrides = desktop::outputs();
         let title = |path: &PathBuf| {
-            self.installed
-                .iter()
-                .find(|i| &i.dir == path)
-                .map_or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), |i| i.title.clone())
+            self.installed.iter().find(|i| &i.dir == path).map_or_else(
+                || path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                |i| i.title.clone(),
+            )
         };
         let monitors = desktop::monitors();
         let left = monitors.iter().map(|m| m.x).fold(f32::MAX, f32::min);
@@ -1930,18 +2241,31 @@ impl App {
         ui.set_monitor_index(index.map_or(-1, |i| i as i32));
         // As the original: the row is there when there is a monitor to choose
         // (or one so wide it is likely several), the number when there are more.
-        let lone_wide = monitors.len() == 1 && monitors.iter().all(|m| m.width / m.height.max(1.0) > 3.5 || m.height / m.width.max(1.0) > 3.5);
+        let lone_wide = monitors.len() == 1
+            && monitors
+                .iter()
+                .all(|m| m.width / m.height.max(1.0) > 3.5 || m.height / m.width.max(1.0) > 3.5);
         ui.set_monitor_row(monitors.len() > 1 || lone_wide);
-        ui.set_monitor_title(if monitors.len() > 1 { tf!("Display {}", "Монитор {}", index.unwrap_or(0) + 1) } else { t("Display", "Монитор").to_owned() }.into());
+        ui.set_monitor_title(
+            if monitors.len() > 1 {
+                tf!("Display {}", "Монитор {}", index.unwrap_or(0) + 1)
+            } else {
+                t("Display", "Монитор").to_owned()
+            }
+            .into(),
+        );
         ui.set_monitors(ModelRc::new(VecModel::from(rows)));
     }
 
     /// Take the wallpaper off a monitor, or off all of them.
     fn clear_monitor(&mut self, index: i32) {
-        let name = usize::try_from(index).ok().and_then(|i| desktop::monitors().into_iter().nth(i)).map(|m| m.name);
+        let name =
+            usize::try_from(index).ok().and_then(|i| desktop::monitors().into_iter().nth(i)).map(|m| m.name);
         let result = match &name {
             // Its own wallpaper goes; without one, there is only everybody's to take off.
-            Some(name) if desktop::outputs().iter().any(|(output, _)| output == name) => desktop::remove_from(name),
+            Some(name) if desktop::outputs().iter().any(|(output, _)| output == name) => {
+                desktop::remove_from(name)
+            }
             _ => desktop::take_off().map(|()| drop(std::thread::spawn(engine::see_off))),
         };
         self.current = desktop::current();
@@ -1971,7 +2295,8 @@ impl App {
     }
 
     fn pick_monitor(&mut self, index: i32) {
-        self.monitor = usize::try_from(index).ok().and_then(|i| desktop::monitors().into_iter().nth(i)).map(|m| m.name);
+        self.monitor =
+            usize::try_from(index).ok().and_then(|i| desktop::monitors().into_iter().nth(i)).map(|m| m.name);
         self.show_monitors();
     }
 
@@ -1997,7 +2322,9 @@ impl App {
         let Some(ui) = self.ui() else { return };
         let settings = Settings::load();
         let multi = desktop::monitors().len() > 1;
-        let index = |row: Row, value: &str| playback_choices(row, multi).iter().position(|c| *c == value).unwrap_or(0) as i32;
+        let index = |row: Row, value: &str| {
+            playback_choices(row, multi).iter().position(|c| *c == value).unwrap_or(0) as i32
+        };
         ui.set_settings(SettingsValues {
             focus: index(Row::Focus, &settings.playback_focus),
             maximized: index(Row::Maximized, &settings.playback_maximized),
@@ -2038,7 +2365,9 @@ impl App {
             self.status(tf!("That did not work: {e}", "Не получилось: {e}"));
         }
         let multi = values.several;
-        let choice = |row: Row, index: i32| playback_choices(row, multi).get(index.max(0) as usize).copied().unwrap_or("run").to_owned();
+        let choice = |row: Row, index: i32| {
+            playback_choices(row, multi).get(index.max(0) as usize).copied().unwrap_or("run").to_owned()
+        };
         let settings = Settings {
             fps: values.fps,
             video_gpu: values.video_gpu,
@@ -2074,8 +2403,13 @@ impl App {
     /// The presets of the selected wallpaper: named sets of its properties.
     fn show_presets(&self) {
         let Some(ui) = self.ui() else { return };
-        let names: Vec<SharedString> =
-            self.selected_card().map(|card| props::presets(card.id)).unwrap_or_default().into_iter().map(Into::into).collect();
+        let names: Vec<SharedString> = self
+            .selected_card()
+            .map(|card| props::presets(card.id))
+            .unwrap_or_default()
+            .into_iter()
+            .map(Into::into)
+            .collect();
         ui.set_presets(ModelRc::new(VecModel::from(names)));
     }
 
@@ -2116,8 +2450,10 @@ impl App {
             let mut values = props::overrides(item.id);
             let before = values.clone();
             for mine in self.properties.iter().filter(|p| self.overrides.contains_key(&p.name)) {
-                if theirs.iter().any(|p| p.name == mine.name && std::mem::discriminant(&p.kind) == std::mem::discriminant(&mine.kind))
-                    && let Some(value) = self.overrides.get(&mine.name)
+                if theirs.iter().any(|p| {
+                    p.name == mine.name
+                        && std::mem::discriminant(&p.kind) == std::mem::discriminant(&mine.kind)
+                }) && let Some(value) = self.overrides.get(&mine.name)
                 {
                     values.insert(mine.name.clone(), value.clone());
                     props::tell_engines(&item.dir, &mine.name, value);
@@ -2134,13 +2470,21 @@ impl App {
     /// The values set here as JSON, on the clipboard.
     fn preset_share(&mut self) {
         let json = serde_json::to_string(&self.overrides).unwrap_or_default();
-        self.report(desktop::copy(&json), t("The preset is on the clipboard as JSON", "Пресет в буфере обмена как JSON"));
+        self.report(
+            desktop::copy(&json),
+            t("The preset is on the clipboard as JSON", "Пресет в буфере обмена как JSON"),
+        );
     }
 
     // ------------------------------------------------------------- playlist    // ------------------------------------------------------------- playlist
 
     fn playlist_id(&self, row: usize) -> Option<u64> {
-        self.playlist.items.get(row).and_then(|p| p.file_name()).and_then(|n| n.to_str()).and_then(|n| n.parse().ok())
+        self.playlist
+            .items
+            .get(row)
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.parse().ok())
     }
 
     fn show_playlist(&mut self) {
@@ -2163,7 +2507,14 @@ impl App {
                 self.playlist_id(row),
                 self.installed.iter().find(|i| &i.dir == path).and_then(|i| i.preview.clone()),
             ) {
-                self.previews.request(Job { id, source: Source::File(preview), size: 96, generation: 0, large: false, animate: false });
+                self.previews.request(Job {
+                    id,
+                    source: Source::File(preview),
+                    size: 96,
+                    generation: 0,
+                    large: false,
+                    animate: false,
+                });
             }
         }
         ui.set_playlist_running(self.playlist.running);
@@ -2244,7 +2595,13 @@ impl App {
                         && self.cards.is_empty()
                     {
                         ui.set_loading(false);
-                        ui.set_error(tf!("{e}. Start Steam: the list will load by itself.", "{e}. Запусти Steam: список загрузится сам.").into());
+                        ui.set_error(
+                            tf!(
+                                "{e}. Start Steam: the list will load by itself.",
+                                "{e}. Запусти Steam: список загрузится сам."
+                            )
+                            .into(),
+                        );
                     }
                 }
             }
@@ -2266,7 +2623,9 @@ impl App {
                 self.show_selection(true);
             }
             Reply::Persona { id, persona } => {
-                let avatar = persona.avatar.map(|(w, h, rgba)| Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&rgba, w, h)));
+                let avatar = persona.avatar.map(|(w, h, rgba)| {
+                    Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&rgba, w, h))
+                });
                 self.personas.insert(id, (persona.name, avatar));
                 self.show_selection(true);
                 if self.author == Some(id)
@@ -2281,7 +2640,10 @@ impl App {
                 if ok {
                     *self.subscribed.entry(id).or_insert(0) |= steam::SUBSCRIBED;
                     self.progress.insert(id, 0.0);
-                    self.status(t("Subscribed, Steam is downloading the wallpaper", "Подписка оформлена, Steam загружает обои"));
+                    self.status(t(
+                        "Subscribed, Steam is downloading the wallpaper",
+                        "Подписка оформлена, Steam загружает обои",
+                    ));
                 } else {
                     self.progress.remove(&id);
                     // Not to be set by itself whenever it gets to the disk.
@@ -2300,7 +2662,10 @@ impl App {
                 }
                 if ok {
                     self.subscribed.remove(&id);
-                    self.status(t("Unsubscribed, Steam will remove the wallpaper from the disk", "Подписка снята, Steam уберёт обои с диска"));
+                    self.status(t(
+                        "Unsubscribed, Steam will remove the wallpaper from the disk",
+                        "Подписка снята, Steam уберёт обои с диска",
+                    ));
                 } else {
                     self.status(t("Steam did not remove the subscription", "Steam не снял подписку"));
                 }
@@ -2335,13 +2700,19 @@ impl App {
             }
             Reply::Progress { id, state, done, total } => {
                 self.subscribed.insert(id, state);
-                let finished = state & steam::INSTALLED != 0 && state & (steam::DOWNLOADING | steam::PENDING) == 0;
+                let finished =
+                    state & steam::INSTALLED != 0 && state & (steam::DOWNLOADING | steam::PENDING) == 0;
                 if finished {
                     self.progress.remove(&id);
                     self.status(t("The wallpaper is downloaded", "Обои загружены"));
                 } else if total > 0 {
                     self.progress.insert(id, done as f32 / total as f32);
-                    self.status(tf!("Steam is downloading: {} of {}", "Steam загружает обои: {} из {}", megabytes(done), megabytes(total)));
+                    self.status(tf!(
+                        "Steam is downloading: {} of {}",
+                        "Steam загружает обои: {} из {}",
+                        megabytes(done),
+                        megabytes(total)
+                    ));
                 }
                 self.refresh_marks();
             }
@@ -2354,8 +2725,15 @@ impl App {
 /// and the last always, four either side of the current one, "…" for the
 /// rest (it asks for a number), the arrows at the ends. Page 0 is "…".
 fn page_buttons(current: u32, pages: u32) -> Vec<PageButton> {
-    let button = |label: String, page: u32| PageButton { label: label.into(), page: page as i32, current: page == current };
-    let mut out = vec![PageButton { label: "«".into(), page: current.saturating_sub(1).max(1) as i32, current: false }];
+    let button = |label: String, page: u32| PageButton {
+        label: label.into(),
+        page: page as i32,
+        current: page == current,
+    };
+    let mut out =
+        vec![PageButton {
+            label: "«".into(), page: current.saturating_sub(1).max(1) as i32, current: false
+        }];
     let (low, high) = (current.saturating_sub(4).max(1), (current + 4).min(pages));
     let mut page = 1;
     while page <= pages {
@@ -2433,7 +2811,12 @@ fn command_line() -> Option<i32> {
         "apply" => {
             let flag = args.iter().position(|a| a == "--output");
             let output = flag.and_then(|i| args.get(i + 1)).filter(|name| !name.starts_with("--"));
-            let target = args.iter().enumerate().skip(1).find(|(i, a)| !a.starts_with("--") && flag != Some(i - 1)).map(|(_, a)| a);
+            let target = args
+                .iter()
+                .enumerate()
+                .skip(1)
+                .find(|(i, a)| !a.starts_with("--") && flag != Some(i - 1))
+                .map(|(_, a)| a);
             // --output without a monitor is not "every monitor".
             let Some(target) = target.filter(|_| flag.is_none() || output.is_some()) else {
                 eprintln!("{USAGE}");
@@ -2471,10 +2854,22 @@ fn command_line() -> Option<i32> {
             0
         }
         "workshop" => {
-            let flag = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
+            let flag =
+                |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
             // A flag's value by where it stands: the same word may be searched for.
-            let values: Vec<usize> = ["--sort", "--type", "--page"].iter().filter_map(|n| args.iter().position(|a| a == n)).map(|i| i + 1).collect();
-            let text = args.iter().enumerate().skip(1).filter(|(i, a)| !a.starts_with("--") && !values.contains(i)).map(|(_, a)| a.clone()).collect::<Vec<_>>().join(" ");
+            let values: Vec<usize> = ["--sort", "--type", "--page"]
+                .iter()
+                .filter_map(|n| args.iter().position(|a| a == n))
+                .map(|i| i + 1)
+                .collect();
+            let text = args
+                .iter()
+                .enumerate()
+                .skip(1)
+                .filter(|(i, a)| !a.starts_with("--") && !values.contains(i))
+                .map(|(_, a)| a.clone())
+                .collect::<Vec<_>>()
+                .join(" ");
             let (sort, trend_days) = match flag("--sort").as_deref() {
                 Some("trend") => (Sort::Trend, 7),
                 Some("new") => (Sort::Newest, 0),
@@ -2526,7 +2921,14 @@ fn command_line() -> Option<i32> {
             let subscribing = args[0] == "subscribe";
             for &id in &ids {
                 let ok = if subscribing { steam.subscribe(id) } else { steam.unsubscribe(id) };
-                say!("{id}: {}", if ok { if subscribing { "subscribed" } else { "unsubscribed" } } else { "Steam refused" });
+                say!(
+                    "{id}: {}",
+                    if ok {
+                        if subscribing { "subscribed" } else { "unsubscribed" }
+                    } else {
+                        "Steam refused"
+                    }
+                );
             }
             if subscribing {
                 // Until Steam has them all (or ten minutes).
@@ -2680,10 +3082,15 @@ fn main() -> Result<(), slint::PlatformError> {
         // (over the window once it is on the screen: it is blurred behind).
         if app.monitors_on_start && language.is_some() && desktop::monitors().len() > 1 {
             let handle = app_handle.clone();
-            start_monitors.start(TimerMode::SingleShot, std::time::Duration::from_millis(300), move || handle.borrow_mut().blur_backdrop());
+            start_monitors.start(TimerMode::SingleShot, std::time::Duration::from_millis(300), move || {
+                handle.borrow_mut().blur_backdrop()
+            });
         }
         if library::assets().is_none() {
-            app.status(t("Wallpaper Engine is not installed in Steam: scenes will not start without its assets", "Wallpaper Engine не установлен в Steam: без его ассетов сцены не запустятся"));
+            app.status(t(
+                "Wallpaper Engine is not installed in Steam: scenes will not start without its assets",
+                "Wallpaper Engine не установлен в Steam: без его ассетов сцены не запустятся",
+            ));
         }
     }
 
@@ -2711,7 +3118,11 @@ fn main() -> Result<(), slint::PlatformError> {
             // The blurred window behind it needs the window on the screen first.
             let handle = handle.clone();
             ui.set_monitors_open(false);
-            pending_monitors.start(TimerMode::SingleShot, std::time::Duration::from_millis(2000), move || handle.borrow_mut().blur_backdrop());
+            pending_monitors.start(
+                TimerMode::SingleShot,
+                std::time::Duration::from_millis(2000),
+                move || handle.borrow_mut().blur_backdrop(),
+            );
         } else if !state.is_empty() {
             start_monitors.stop();
             ui.set_monitors_open(false);
@@ -2779,7 +3190,8 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     on!(on_open_monitors, |app| app.open_monitors());
     on!(on_item_context, |app, index| app.context_menu(index.max(0) as usize));
-    on!(on_visible_changed, |app, first, last| app.visible_changed(first.max(0) as usize, last.max(0) as usize));
+    on!(on_visible_changed, |app, first, last| app
+        .visible_changed(first.max(0) as usize, last.max(0) as usize));
     on!(on_notice_closed, |app| {
         app.author = None;
         app.page = 1;
@@ -2828,7 +3240,9 @@ fn main() -> Result<(), slint::PlatformError> {
         app.reload();
     });
     on!(on_filter_toggled, |app, group, option| {
-        if let Some(choice) = app.groups.get_mut(group as usize).and_then(|g| g.choices.get_mut(option as usize)) {
+        if let Some(choice) =
+            app.groups.get_mut(group as usize).and_then(|g| g.choices.get_mut(option as usize))
+        {
             choice.checked = !choice.checked;
             app.filters_changed();
         }
@@ -2854,17 +3268,27 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     on!(on_filter_section_all, |app, group, section, checked| {
         if let Some(group) = app.groups.get_mut(group as usize) {
-            group.choices.iter_mut().filter(|c| c.section == section as usize).for_each(|c| c.checked = checked);
+            group
+                .choices
+                .iter_mut()
+                .filter(|c| c.section == section as usize)
+                .for_each(|c| c.checked = checked);
             app.filters_changed();
         }
     });
     on!(on_content_preferences, |app| {
-        let result = desktop::open_steam("steam://openurl/https://store.steampowered.com/account/preferences");
+        let result =
+            desktop::open_steam("steam://openurl/https://store.steampowered.com/account/preferences");
         app.report(result, t("Steam's content preferences are open", "Настройки контента Steam открыты"));
     });
     on!(on_anime_changed, |app, shown| {
         // As the original: the answer ticks "Аниме" among the tags, or not.
-        if let Some(choice) = app.groups.iter_mut().find(|g| g.title == "Метки").and_then(|g| g.choices.iter_mut().find(|c| c.tag == "Anime")) {
+        if let Some(choice) = app
+            .groups
+            .iter_mut()
+            .find(|g| g.title == "Метки")
+            .and_then(|g| g.choices.iter_mut().find(|c| c.tag == "Anime"))
+        {
             choice.checked = shown;
         }
         if let Some(ui) = app.ui() {
@@ -2878,9 +3302,16 @@ fn main() -> Result<(), slint::PlatformError> {
         let monitors = desktop::monitors();
         let shape = |m: &desktop::Monitor| {
             let ratio = m.width / m.height.max(1.0);
-            if ratio < 1.0 { 4 } else if ratio > 2.2 { 1 } else { 0 }
+            if ratio < 1.0 {
+                4
+            } else if ratio > 2.2 {
+                1
+            } else {
+                0
+            }
         };
-        let fitting: Vec<usize> = if monitors.is_empty() { vec![0] } else { monitors.iter().map(shape).collect() };
+        let fitting: Vec<usize> =
+            if monitors.is_empty() { vec![0] } else { monitors.iter().map(shape).collect() };
         if let Some(group) = app.groups.iter_mut().find(|g| g.title == "Разрешение экрана") {
             for choice in &mut group.choices {
                 choice.checked = if choice.tag == "Other resolution" {
@@ -2904,7 +3335,11 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     on!(on_page_clicked, |app, page| {
         // A number past the last page is the last page, as in the original.
-        let last = if app.online() { app.total.div_ceil(steam::PAGE_SIZE) } else { app.total.div_ceil(app.per_page as u32) };
+        let last = if app.online() {
+            app.total.div_ceil(steam::PAGE_SIZE)
+        } else {
+            app.total.div_ceil(app.per_page as u32)
+        };
         app.page = (page.max(1) as u32).min(last.max(1));
         app.selected = None;
         app.reload();
@@ -3000,7 +3435,9 @@ fn main() -> Result<(), slint::PlatformError> {
         app.status(tf!("Saved as \"{name}\"", "Сохранён как «{name}»"));
     });
     on!(on_playlist_load, |app, row| {
-        if let Some(loaded) = Playlist::saved().get(row.max(0) as usize).and_then(|name| Playlist::load_saved(name)) {
+        if let Some(loaded) =
+            Playlist::saved().get(row.max(0) as usize).and_then(|name| Playlist::load_saved(name))
+        {
             let running = app.playlist.running;
             app.playlist = Playlist { running, ..loaded };
             app.playlist.save();
@@ -3038,7 +3475,13 @@ fn main() -> Result<(), slint::PlatformError> {
     on!(on_report, |app| {
         if let Some(card) = app.selected_card() {
             let result = desktop::open_steam(&format!("steam://url/CommunityFilePage/{}", card.id));
-            app.report(result, t("Reports are filed on the wallpaper's page in Steam: it is open", "Жалобы подаются на странице обоев в Steam: она открыта"));
+            app.report(
+                result,
+                t(
+                    "Reports are filed on the wallpaper's page in Steam: it is open",
+                    "Жалобы подаются на странице обоев в Steam: она открыта",
+                ),
+            );
         }
     });
     on!(on_preset_save, |app, name| app.preset_save(&name));
@@ -3062,7 +3505,11 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     on!(on_open_file, |app, kind| app.open_file(kind == "static"));
     on!(on_playlist_toggle_selected, |app| {
-        if let Some(row) = app.selected_card().and_then(|card| app.dir_of(&card)).and_then(|dir| app.playlist.items.iter().position(|p| *p == dir)) {
+        if let Some(row) = app
+            .selected_card()
+            .and_then(|card| app.dir_of(&card))
+            .and_then(|dir| app.playlist.items.iter().position(|p| *p == dir))
+        {
             app.playlist_remove(row);
         }
     });
@@ -3162,8 +3609,14 @@ mod tests {
     fn pages_as_the_original_lays_them_out() {
         assert_eq!(labels(&page_buttons(1, 2)), ["«", "1", "2", "»"]);
         assert_eq!(labels(&page_buttons(1, 1000)), ["«", "1", "2", "3", "4", "5", "…", "1000", "»"]);
-        assert_eq!(labels(&page_buttons(10, 1000)), ["«", "1", "…", "6", "7", "8", "9", "10", "11", "12", "13", "14", "…", "1000", "»"]);
-        assert_eq!(labels(&page_buttons(1000, 1000)), ["«", "1", "…", "996", "997", "998", "999", "1000", "»"]);
+        assert_eq!(
+            labels(&page_buttons(10, 1000)),
+            ["«", "1", "…", "6", "7", "8", "9", "10", "11", "12", "13", "14", "…", "1000", "»"]
+        );
+        assert_eq!(
+            labels(&page_buttons(1000, 1000)),
+            ["«", "1", "…", "996", "997", "998", "999", "1000", "»"]
+        );
         let around = page_buttons(10, 1000);
         assert_eq!((around[0].page, around.last().unwrap().page), (9, 11));
         assert!(around.iter().any(|b| b.current && b.label == "10"));
@@ -3186,9 +3639,26 @@ mod tests {
 
     #[test]
     fn names_sort_as_the_browser_does() {
-        let mut titles = vec!["Anime girl", "150594984_p0", "[MLP] FS", "\u{3010}Blue Archive\u{3011}", "arch linux", "\u{8494}\u{84dd}"];
+        let mut titles = vec![
+            "Anime girl",
+            "150594984_p0",
+            "[MLP] FS",
+            "\u{3010}Blue Archive\u{3011}",
+            "arch linux",
+            "\u{8494}\u{84dd}",
+        ];
         titles.sort_by_key(|t| collation_key(t));
-        assert_eq!(titles, ["[MLP] FS", "\u{3010}Blue Archive\u{3011}", "150594984_p0", "Anime girl", "arch linux", "\u{8494}\u{84dd}"]);
+        assert_eq!(
+            titles,
+            [
+                "[MLP] FS",
+                "\u{3010}Blue Archive\u{3011}",
+                "150594984_p0",
+                "Anime girl",
+                "arch linux",
+                "\u{8494}\u{84dd}"
+            ]
+        );
     }
 
     #[test]

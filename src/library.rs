@@ -61,15 +61,13 @@ pub fn libraries() -> Vec<PathBuf> {
 
 /// Wallpaper Engine's own assets: without them no scene renders.
 pub fn assets() -> Option<PathBuf> {
-    libraries()
-        .into_iter()
-        .map(|l| l.join("steamapps/common/wallpaper_engine/assets"))
-        .find(|p| p.is_dir())
+    libraries().into_iter().map(|l| l.join("steamapps/common/wallpaper_engine/assets")).find(|p| p.is_dir())
 }
 
 fn read_item(dir: &Path) -> Option<Installed> {
     let id = dir.file_name()?.to_str()?.parse::<u64>().ok()?;
-    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("project.json")).ok()?).ok()?;
+    let json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("project.json")).ok()?).ok()?;
     let string = |key: &str| json.get(key).and_then(|v| v.as_str()).unwrap_or("").to_owned();
     let preview = Some(dir.join(string("preview"))).filter(|p| p.is_file());
     let modified = std::fs::metadata(dir)
@@ -94,7 +92,9 @@ fn read_item(dir: &Path) -> Option<Installed> {
             .unwrap_or_default(),
         approved: json.get("approved").and_then(|v| v.as_bool()).unwrap_or(false),
         audio_responsive: json["general"]["supportsaudioprocessing"].as_bool().unwrap_or(false),
-        customizable: json["general"]["properties"].as_object().is_some_and(|p| p.keys().any(|k| k != "schemecolor")),
+        customizable: json["general"]["properties"]
+            .as_object()
+            .is_some_and(|p| p.keys().any(|k| k != "schemecolor")),
         rating: Some(string("contentrating")).filter(|r| !r.is_empty()).unwrap_or_else(|| "Everyone".into()),
         modified,
     })
@@ -103,7 +103,9 @@ fn read_item(dir: &Path) -> Option<Installed> {
 pub fn installed() -> Vec<Installed> {
     let mut out = Vec::new();
     for library in libraries() {
-        let Ok(dirs) = std::fs::read_dir(library.join(format!("steamapps/workshop/content/{}", crate::steam::APP))) else {
+        let Ok(dirs) =
+            std::fs::read_dir(library.join(format!("steamapps/workshop/content/{}", crate::steam::APP)))
+        else {
             continue;
         };
         out.extend(dirs.flatten().filter_map(|d| read_item(&d.path())));

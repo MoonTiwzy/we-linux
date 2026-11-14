@@ -107,9 +107,23 @@ fn video_properties() -> Vec<Property> {
         alignment,
         row("alignmentposition", t("Position", "Позиция"), Kind::Slider, Value::from(50), 0.0, 100.0),
         row("alignmentfliph", t("Flip", "Отразить"), Kind::Bool, Value::Bool(false), 0.0, 1.0),
-        row("rate", t("Playback rate", "Скорость воспроизведения"), Kind::Slider, Value::from(100), 25.0, 200.0),
+        row(
+            "rate",
+            t("Playback rate", "Скорость воспроизведения"),
+            Kind::Slider,
+            Value::from(100),
+            25.0,
+            200.0,
+        ),
         row("volume", t("Volume", "Громкость"), Kind::Slider, Value::from(50), 0.0, 100.0),
-        row("showcoloroptions", t("Show color options", "Показать настройки цвета"), Kind::Bool, Value::Bool(false), 0.0, 1.0),
+        row(
+            "showcoloroptions",
+            t("Show color options", "Показать настройки цвета"),
+            Kind::Bool,
+            Value::Bool(false),
+            0.0,
+            1.0,
+        ),
     ]
 }
 
@@ -126,7 +140,11 @@ pub fn fill_of(alignment: &Value) -> Option<&'static str> {
 pub fn load(dir: &Path) -> Vec<Property> {
     let Ok(bytes) = std::fs::read(dir.join("project.json")) else { return Vec::new() };
     let Ok(json) = serde_json::from_slice::<Value>(&bytes) else { return Vec::new() };
-    let builtin = if json["type"].as_str().is_some_and(|t| t.eq_ignore_ascii_case("video")) { video_properties() } else { Vec::new() };
+    let builtin = if json["type"].as_str().is_some_and(|t| t.eq_ignore_ascii_case("video")) {
+        video_properties()
+    } else {
+        Vec::new()
+    };
     let Some(map) = json.pointer("/general/properties").and_then(Value::as_object) else {
         return builtin;
     };
@@ -189,7 +207,9 @@ fn loose(v: &Value) -> String {
     match v {
         Value::String(s) => s.trim().to_owned(),
         Value::Bool(b) => b.to_string(),
-        Value::Number(n) => n.as_f64().map_or(n.to_string(), |f| if f.fract() == 0.0 { format!("{f:.0}") } else { f.to_string() }),
+        Value::Number(n) => n
+            .as_f64()
+            .map_or(n.to_string(), |f| if f.fract() == 0.0 { format!("{f:.0}") } else { f.to_string() }),
         _ => String::new(),
     }
 }
@@ -216,7 +236,13 @@ pub fn holds(condition: &str, values: &BTreeMap<String, Value>) -> bool {
     }
     let Some(value) = values.get(name.trim()) else { return true };
     let wanted = parts.1.trim().trim_matches(|c| c == '\'' || c == '"');
-    let wanted = if wanted == "1" && value.is_boolean() { "true" } else if wanted == "0" && value.is_boolean() { "false" } else { wanted };
+    let wanted = if wanted == "1" && value.is_boolean() {
+        "true"
+    } else if wanted == "0" && value.is_boolean() {
+        "false"
+    } else {
+        wanted
+    };
     (loose(value) == wanted) != negate
 }
 
@@ -230,10 +256,7 @@ fn overrides_file(id: u64) -> PathBuf {
 /// What the user changed for item `id`: name -> value. The daemon hands
 /// them to the engine when it starts.
 pub fn overrides(id: u64) -> BTreeMap<String, Value> {
-    std::fs::read(overrides_file(id))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    std::fs::read(overrides_file(id)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
 pub fn save_overrides(id: u64, values: &BTreeMap<String, Value>) {
@@ -283,7 +306,8 @@ pub fn save_preset(id: u64, name: &str, values: &BTreeMap<String, Value>) -> Res
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    std::fs::write(path, serde_json::to_vec_pretty(values).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+    std::fs::write(path, serde_json::to_vec_pretty(values).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())
 }
 
 /// Tell the renderer the new value of a property of `wallpaper`.
@@ -293,7 +317,8 @@ pub fn tell_engines(wallpaper: &Path, name: &str, value: &Value) {
 
 /// "r g b" (0..1 each) -> (r, g, b) 0..255.
 pub fn rgb(value: &Value) -> (u8, u8, u8) {
-    let parts: Vec<f64> = value.as_str().unwrap_or("").split_whitespace().filter_map(|p| p.parse().ok()).collect();
+    let parts: Vec<f64> =
+        value.as_str().unwrap_or("").split_whitespace().filter_map(|p| p.parse().ok()).collect();
     let c = |i: usize| (parts.get(i).copied().unwrap_or(1.0).clamp(0.0, 1.0) * 255.0).round() as u8;
     (c(0), c(1), c(2))
 }
