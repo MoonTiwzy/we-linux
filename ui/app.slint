@@ -8,6 +8,7 @@ import { Btn, Check, Caret, DropList, Field, Rail, Scroll, GroupBox, Ruled, Link
 import { Item, PageButton, Prop, Tile, Pager, PropRow, SourceTab } from "parts.slint";
 import { MonitorEntry, MonitorPanel } from "monitors.slint";
 import { SettingsView, SettingsValues, PluginEntry } from "settings.slint";
+import { Busy, Toast, Alert } from "busy.slint";
 
 export { L, Tip, Theme, Icons, Glyph, Item, PageButton, Prop, MonitorEntry, SettingsValues, PluginEntry, MenuEntry }
 
@@ -176,6 +177,22 @@ export component AppWindow inherits Window {
     in property <bool> sel-favorite;
     in property <bool> sel-busy;
     in property <float> sel-progress: -1;
+    /// The selected wallpaper on its way to the desktop, as its tile says it.
+    in property <int> sel-state;
+    in property <string> sel-state-text;
+    /// The toast at the bottom while a wallpaper is on its way (see busy.slint).
+    in property <bool> toast-shown;
+    in property <int> toast-kind;
+    in property <string> toast-title;
+    in property <string> toast-info;
+    /// A refusal over the grid, until the user does something else.
+    in property <bool> alert-shown;
+    in property <string> alert-headline;
+    in property <string> alert-body;
+    in property <string> alert-action;
+    in property <Glyph> alert-icon;
+    callback alert-act();
+    callback alert-closed();
     in property <[Prop]> props;
 
     in property <[PlaylistEntry]> playlist;
@@ -671,6 +688,20 @@ export component AppWindow inherits Window {
                     }
                 }
                 Rectangle { height: 6px; }
+
+                // ------------------------------------------------ a wallpaper that did not show, and why
+                if root.alert-shown: VerticalLayout {
+                    padding-bottom: 5px;
+                    Alert {
+                        headline: root.alert-headline;
+                        body: root.alert-body;
+                        action: root.alert-action;
+                        action-icon: root.alert-icon;
+                        narrow: root.width <= 1050px;
+                        act => { root.alert-act(); }
+                        closed => { root.alert-closed(); }
+                    }
+                }
 
                 // ------------------------------------------------ the original's notice (an author's wallpapers only)
                 if root.notice != "": VerticalLayout {
@@ -1414,12 +1445,24 @@ export component AppWindow inherits Window {
                         // The preview: 260 tall, its whole picture in it.
                         Rectangle {
                             height: root.card-width <= 205px ? 165px : 260px;
-                            Image {
+                            sel-picture := Image {
                                 x: 10px;
                                 width: parent.width - 20px;
                                 height: parent.height;
                                 source: root.sel-image;
                                 image-fit: contain;
+                            }
+                            // Over the picture itself, not the room around it.
+                            Busy {
+                                property <float> fit: min(sel-picture.width / max(1px, sel-picture.source.width * 1px), sel-picture.height / max(1px, sel-picture.source.height * 1px));
+                                width: sel-picture.source.width > 0 ? sel-picture.source.width * 1px * self.fit : sel-picture.width;
+                                height: sel-picture.source.height > 0 ? sel-picture.source.height * 1px * self.fit : sel-picture.height;
+                                x: sel-picture.x + (sel-picture.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                                state: root.sel-state;
+                                text: root.sel-state-text;
+                                spinner: 64px;
+                                font-size: 15.4px;
                             }
                         }
                         // In the small window: the arrows to the wallpaper before and after.
@@ -1761,6 +1804,18 @@ export component AppWindow inherits Window {
     }
 
     // The line between the grid and the card is the window's own colour: nothing to draw.
+
+    // ---------------------------------------------------------------- the toast
+    // At the bottom in the middle, 24 above the edge, sliding up as the original's.
+    Toast {
+        x: (parent.width - self.width) / 2;
+        y: root.toast-shown ? parent.height - 81px : parent.height + 10px;
+        animate y { duration: 300ms; easing: ease; }
+        shown: root.toast-shown;
+        kind: root.toast-kind;
+        title: root.toast-title;
+        info: root.toast-info;
+    }
 
     // ---------------------------------------------------------------- the monitors
     MonitorPanel {

@@ -24,6 +24,8 @@ pub(super) fn wire(ui: &AppWindow) {
     on!(on_sort_direction_changed, |app| app.sort_direction_changed());
     on!(on_page_clicked, |app, page| app.page_picked(page));
     on!(on_notice_closed, |app| app.notice_closed());
+    on!(on_alert_act, |app| app.alert_act());
+    on!(on_alert_closed, |app| app.alert_closed());
     on!(on_reload, |app| app.reload());
 
     on!(on_filter_toggled, |app, group, option| app.filter_toggled(group, option));

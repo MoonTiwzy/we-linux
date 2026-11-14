@@ -111,6 +111,7 @@ impl App {
             return;
         };
         let dir = self.dir_of(&card);
+        self.show_selected_state(dir.as_deref());
         ui.set_has_selection(true);
         ui.set_sel_title(card.title.as_str().into());
         ui.set_sel_subscribed(self.catalog.is_subscribed(card.id));

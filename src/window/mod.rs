@@ -13,6 +13,8 @@
 //! - `properties`: that wallpaper's properties and presets.
 //! - `playlist`: the playlist and its strip.
 //! - `desk`: what is on the desktop, the monitor chooser, "Отмена".
+//! - `progress`: a wallpaper on its way there: the loader, the toast, the
+//!   refusal over the grid.
 //! - `settings`: the settings dialog and the language.
 //!
 //! Besides them: the flows that are about several parts at once (`picking`:
@@ -41,6 +43,7 @@ mod listing;
 mod menu;
 mod picking;
 mod playlist;
+mod progress;
 mod properties;
 mod replies;
 mod saved;
@@ -67,6 +70,7 @@ use details::Details;
 use filters::Filters;
 use grid::Grid;
 use playlist::PlaylistPanel;
+use progress::Progress;
 use properties::Properties;
 use settings::Language;
 use subscriptions::Unsubscribing;
@@ -74,7 +78,7 @@ use subscriptions::Unsubscribing;
 use crate::lang::{self, t};
 use crate::previews::Previews;
 use crate::steam::{self, Command};
-use crate::{desktop, engine, library, tf};
+use crate::{desktop, engine, library, log, tf};
 
 pub(super) struct App {
     ui: Weak<AppWindow>,
@@ -90,6 +94,7 @@ pub(super) struct App {
     properties: Properties,
     playlist: PlaylistPanel,
     desk: Desk,
+    progress: Progress,
     language: Language,
     /// The question before unsubscribing, while it is asked.
     unsubscribing: Option<Unsubscribing>,
@@ -110,8 +115,16 @@ impl App {
         }
     }
 
-    /// The line at the top left, in the colour of what went wrong.
+    /// The line at the top left, in the colour of what went wrong; and the
+    /// log, where it stays after the line fades.
     fn warn(&self, text: impl Into<SharedString>) {
+        let text = text.into();
+        log::warn(text.as_str());
+        self.alarm(text);
+    }
+
+    /// The same line, for what the log has in its own words already.
+    fn alarm(&self, text: impl Into<SharedString>) {
         if let Some(ui) = self.ui() {
             ui.set_status(text.into());
             ui.set_status_error(true);
@@ -122,7 +135,7 @@ impl App {
     fn report(&self, result: Result<(), String>, done: &str) {
         match result {
             Ok(()) => self.status(done),
-            Err(e) => self.status(tf!("That did not work: {e}", "Не получилось: {e}")),
+            Err(e) => self.warn(tf!("That did not work: {e}", "Не получилось: {e}")),
         }
     }
 
@@ -147,10 +160,13 @@ impl App {
 
 /// Open the window and run it until it closes.
 pub fn run() -> Result<(), slint::PlatformError> {
+    log::as_role("window");
     // A wallpaper is set and nothing shows it (the daemon was not started
     // with the session, or went away): it comes back with the window.
-    if desktop::current().is_some() {
-        let _ = engine::ensure_daemon();
+    if desktop::current().is_some()
+        && let Err(why) = engine::ensure_daemon()
+    {
+        log::error(format!("the daemon does not start: {why}"));
     }
 
     let ui = AppWindow::new()?;
@@ -188,6 +204,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         properties: Properties::default(),
         playlist: PlaylistPanel::load(playlist_model),
         desk: Desk::now(),
+        progress: Progress::default(),
         language: Language::picked(language.clone()),
         unsubscribing: None,
     });

@@ -154,6 +154,11 @@ impl Catalog {
         self.steam_ok
     }
 
+    /// Whether Steam was found missing already (not only not found yet).
+    pub(super) fn steam_missing(&self) -> bool {
+        self.steam_missing
+    }
+
     /// Whether Steam is there now. Returns whether it had been missing:
     /// true when it comes back, not when it is there from the start.
     pub(super) fn set_steam_ok(&mut self, ok: bool) -> bool {

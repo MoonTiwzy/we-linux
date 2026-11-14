@@ -3,7 +3,12 @@
 //!
 //! tab=N, filters=0|1, select=N, settings=N (its tab), monitors, dialog=N,
 //! menu=N, mini, pick=a.b.c (tiles picked as Ctrl would), ask (the question
-//! Delete puts), band (a rectangle drawn over the grid).
+//! Delete puts), band (a rectangle drawn over the grid), phase=P (the
+//! selected wallpaper on its way to the desktop, as if the renderer said so:
+//! loading, starting, waiting, optimising, stuck, done, failed) and
+//! refusal=R (what "failed" says: web, preset, memory, assets, app, hung, other);
+//! apply=ID.ID (set those wallpapers of the grid for real, four seconds apart, as
+//! clicks would: the last one wins).
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -32,11 +37,12 @@ fn shown_state() -> HashMap<String, String> {
 /// chooser due to come down by itself: any state asked for keeps it up,
 /// unless it is the chooser that is asked for. The timers returned must
 /// live as long as the window.
-pub(super) fn apply(ui: &AppWindow, start_monitors: &Timer) -> [Timer; 2] {
+pub(super) fn apply(ui: &AppWindow, start_monitors: &Timer) -> [Timer; 3] {
     let state = shown_state();
     let number = |key: &str| state.get(key).and_then(|v| v.parse::<i32>().ok());
     let pending_select = Timer::default();
     let pending_monitors = Timer::default();
+    let pending_apply = Timer::default();
     slot::with(|app| {
         if let Some(tab) = number("tab") {
             app.switch_tab(tab);
@@ -80,18 +86,51 @@ pub(super) fn apply(ui: &AppWindow, start_monitors: &Timer) -> [Timer; 2] {
         .map(|list| list.split('.').filter_map(|n| n.parse().ok()).collect())
         .unwrap_or_default();
     let ask = state.contains_key("ask");
+    let phase = state.get("phase").cloned();
+    let refusal = state.get("refusal").cloned().unwrap_or_default();
+    let applied: Vec<u64> = state
+        .get("apply")
+        .map(|list| list.split('.').filter_map(|n| n.parse().ok()).collect())
+        .unwrap_or_default();
     if state.contains_key("band") {
         ui.set_debug_band(true);
     }
-    if select.is_some() || !picks.is_empty() || ask {
-        pending_select.start(TimerMode::SingleShot, Duration::from_millis(2500), move || {
-            slot::with(|app| app.show_picked(select, &picks, ask));
+    if !applied.is_empty() {
+        let clicks = std::rc::Rc::new(std::cell::RefCell::new(applied.into_iter()));
+        pending_apply.start(TimerMode::Repeated, Duration::from_millis(4000), move || {
+            let next = clicks.borrow_mut().next();
+            if let Some(id) = next {
+                slot::with(|app| app.click_id(id));
+            }
         });
     }
-    [pending_select, pending_monitors]
+    if select.is_some() || !picks.is_empty() || ask {
+        pending_select.start(TimerMode::SingleShot, Duration::from_millis(2500), move || {
+            slot::with(|app| {
+                app.show_picked(select, &picks, ask);
+                if let Some(phase) = &phase {
+                    app.show_fixed(phase, &refusal);
+                }
+            });
+        });
+    }
+    [pending_select, pending_monitors, pending_apply]
 }
 
 impl App {
+    /// A click on the tile of `id`, which sets it as a click does; one on
+    /// another page of the list is set as it would be from there.
+    fn click_id(&mut self, id: u64) {
+        if let Some(index) = self.grid.cards().iter().position(|c| c.id == id) {
+            self.click(index, false, false);
+        } else if let Some(dir) = self.catalog.dir_of(id)
+            && crate::desktop::clear_outputs().and_then(|()| crate::desktop::apply(&dir)).is_ok()
+        {
+            let title = self.title_of(id);
+            self.follow_applying(super::progress::Applying::new(&title, &dir, None));
+        }
+    }
+
     /// The selection and the picked tiles `--show` asked for, and the question.
     fn show_picked(&mut self, select: Option<i32>, picks: &[usize], ask: bool) {
         if let Some(index) = select.map(|i| i as usize).filter(|i| *i < self.grid.cards().len()) {

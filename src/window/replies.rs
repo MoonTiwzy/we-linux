@@ -6,8 +6,8 @@ use super::browse::INSTALLED;
 use super::grid::image_of;
 use crate::lang::t;
 use crate::steam::Reply;
-use crate::tf;
 use crate::units::megabytes;
+use crate::{log, tf};
 
 /// What a list of the workshop says in place of its wallpapers while there
 /// is no Steam: why, and that nothing needs doing here once it is fixed.
@@ -23,6 +23,9 @@ impl App {
         match reply {
             Reply::Session(Ok(())) => {
                 let was_missing = self.catalog.set_steam_ok(true);
+                if was_missing {
+                    log::info("Steam is back: the workshop works again");
+                }
                 if let Some(ui) = self.ui() {
                     ui.set_steam_ok(true);
                 }
@@ -39,6 +42,11 @@ impl App {
                 }
             }
             Reply::Session(Err(why)) => {
+                // Said in the log once, when it changes: the thread says it again
+                // every time it tries.
+                if !self.catalog.steam_missing() {
+                    log::warn(format!("Steam: {why}"));
+                }
                 self.catalog.set_steam_ok(false);
                 if let Some(ui) = self.ui() {
                     ui.set_steam_ok(false);
@@ -47,7 +55,7 @@ impl App {
                         ui.set_error(offline(&why).into());
                     }
                 }
-                self.warn(tf!(
+                self.alarm(tf!(
                     "{why}. The workshop comes back by itself with Steam; installed wallpapers work as usual.",
                     "{why}. Мастерская вернётся сама вместе со Steam; установленные обои работают как обычно."
                 ));

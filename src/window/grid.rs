@@ -301,6 +301,7 @@ impl App {
     /// A tile as the grid shows it: the card and the marks the catalogue
     /// and the picking give it.
     fn item_of(&self, card: &Card) -> Item {
+        let (state, state_text) = self.tile_state(self.dir_of(card).as_deref());
         Item {
             title: card.title.as_str().into(),
             image: Image::default(),
@@ -311,6 +312,8 @@ impl App {
             favorite: self.catalog.is_favorite(card.id),
             progress: self.catalog.progress(card.id),
             picked: self.grid.picked.contains(&card.id),
+            state,
+            state_text: state_text.into(),
         }
     }
 
@@ -375,11 +378,15 @@ impl App {
                 || item.progress != fresh.progress
                 || item.favorite != fresh.favorite
                 || item.picked != fresh.picked
+                || item.state != fresh.state
+                || item.state_text != fresh.state_text
             {
                 item.subscribed = fresh.subscribed;
                 item.progress = fresh.progress;
                 item.favorite = fresh.favorite;
                 item.picked = fresh.picked;
+                item.state = fresh.state;
+                item.state_text = fresh.state_text;
                 self.grid.model.set_row_data(row, item);
             }
         }

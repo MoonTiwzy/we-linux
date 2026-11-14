@@ -1,10 +1,11 @@
-//! The command line: `apply`, `off`, `status`, `doctor` and the rest (see
+//! The command line: `apply`, `off`, `status`, `doctor`, `logs` and the rest (see
 //! `USAGE`). With no command (or with `--show`, which only shapes the window)
 //! the window opens instead.
 
+use crate::stage::{self, Asked, Phase};
 use crate::steam::{self, Sort, Workshop};
 use crate::units::megabytes;
-use crate::{desktop, engine, library};
+use crate::{desktop, engine, library, logs};
 
 const USAGE: &str = "\
 we-linux                          the window: library, workshop, playlist
@@ -17,7 +18,10 @@ we-linux status                   what is on the desktop
 we-linux clear-cache              empty the caches: previews, stills, copies of
                                   videos, compiled shaders
 we-linux doctor                   everything a bug report needs: versions, what
-                                  was found, the settings, the engine's log
+                                  was found, the settings, the logs' last lines
+we-linux logs [-f]                what was found, then everything the daemon,
+                                  the window, the renderer and the hook said, in
+                                  order; -f follows the logs live
 we-linux workshop [TEXT] [--sort top|trend|new|subs|updated] [--type scene|video|web]
                   [--page N]      search the workshop: id, size, votes, title
 we-linux subscribe ID...          subscribe and wait for Steam to download
@@ -66,12 +70,25 @@ pub fn run() -> Option<i32> {
                 eprintln!("{USAGE}");
                 return Some(2);
             };
-            done(desktop::resolve(target).and_then(|path| match output {
+            crate::log::as_role("command");
+            let result = desktop::resolve(target).and_then(|path| match output {
                 Some(output) => desktop::apply_to(output, &path),
                 None => desktop::clear_outputs().and_then(|()| desktop::apply(&path)),
-            }))
+            });
+            match &result {
+                Ok(()) => crate::log::info(format!(
+                    "we-linux apply {target}{}",
+                    output.map_or_else(String::new, |o| format!(" --output {o}"))
+                )),
+                Err(why) => crate::log::warn(format!("we-linux apply {target}: {why}")),
+            }
+            done(result)
         }
-        "off" => done(desktop::off()),
+        "off" => {
+            crate::log::as_role("command");
+            crate::log::info("we-linux off");
+            done(desktop::off())
+        }
         "status" => {
             let desktop = desktop::Desktop::load();
             match &desktop.wallpaper {
@@ -81,14 +98,30 @@ pub fn run() -> Option<i32> {
             for (output, path) in &desktop.outputs {
                 say!("{output}: {}", path.display());
             }
-            say!("renderer: {}", if engine::running() { "running" } else { "not running" });
+            let seen = engine::seen();
+            say!(
+                "renderer: {}",
+                if seen.busy.is_some() {
+                    "busy"
+                } else if seen.shown.is_some() {
+                    "running"
+                } else {
+                    "not running"
+                }
+            );
             if let Some(wallpaper) = desktop.wallpaper.as_ref().or(desktop.outputs.values().next()) {
+                let asked =
+                    Asked { wallpaper: wallpaper.clone(), output: None, waited: std::time::Duration::ZERO };
                 say!(
                     "state: {}",
-                    match engine::stage(wallpaper) {
-                        engine::Stage::Shown => "shown",
-                        engine::Stage::Loading => "loading",
-                        engine::Stage::Failed(_) => "failed",
+                    match stage::phase(&asked, &seen) {
+                        Phase::Shown => "shown".to_owned(),
+                        Phase::Optimising(n) => format!("shown, {n} video(s) being re-encoded"),
+                        Phase::Starting => "the renderer is starting".to_owned(),
+                        Phase::Loading => "loading".to_owned(),
+                        Phase::Waiting(before) => format!("waiting for {} to load", before.display()),
+                        Phase::Failed(_) => "failed".to_owned(),
+                        Phase::Stuck => "stuck".to_owned(),
                     }
                 );
             }
@@ -213,6 +246,14 @@ pub fn run() -> Option<i32> {
         }
         "doctor" => {
             say!("{}", engine::doctor());
+            0
+        }
+        "logs" => {
+            if args.iter().skip(1).any(|a| a == "-f" || a == "--follow") {
+                logs::follow();
+            } else {
+                logs::print();
+            }
             0
         }
         "-h" | "--help" | "help" => {

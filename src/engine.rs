@@ -24,6 +24,8 @@ use serde_json::{Value, json};
 
 use crate::compositor::{self, Change, Over};
 use crate::desktop::{self, Desktop, Settings};
+use crate::log;
+use crate::stage::{Busy, Seen};
 
 unsafe extern "C" {
     fn prctl(option: i32, ...) -> i32;
@@ -721,7 +723,11 @@ fn hook(settings: &Settings, wallpaper: &Path, still: Option<&Path>) {
     }
     let title = project(wallpaper)["title"].as_str().unwrap_or("").to_owned();
     let _ = std::fs::create_dir_all(runtime_dir());
-    let _ = run_hook(&settings.hook, wallpaper, still, &title, &hook_log());
+    match run_hook(&settings.hook, wallpaper, still, &title, &hook_log()) {
+        Ok(status) if status.success() => log::info("the hook ran"),
+        Ok(status) => log::warn(format!("the hook ended with {status}: what it said is in hook.log")),
+        Err(why) => log::warn(format!("the hook did not start: {why}")),
+    }
 }
 
 /// Run a hook with its output in `log`, started anew: what it says is not for
@@ -758,7 +764,9 @@ pub fn announce(wallpaper: PathBuf) {
             && let Some(still) = &still
         {
             remember_images();
-            show_image(still);
+            if !show_image(still) {
+                log::info("no static wallpaper program took the still (awww, swww or the desktop's own)");
+            }
         }
         hook(&settings, &wallpaper, still.as_deref());
     });
@@ -786,6 +794,109 @@ pub fn video_item(video: &Path) -> Result<PathBuf, String> {
 }
 
 // ------------------------------------------------------------------ the daemon
+
+/// A wallpaper as the log names it: its title and its folder.
+fn describe(wallpaper: &Path) -> String {
+    match project(wallpaper)["title"].as_str().filter(|t| !t.is_empty()) {
+        Some(title) => format!("\"{title}\" ({})", wallpaper.display()),
+        None => wallpaper.display().to_string(),
+    }
+}
+
+/// What the desktop asks for, as the log says it.
+fn describe_desktop(desktop: &Desktop) -> String {
+    let mut parts = vec![match &desktop.wallpaper {
+        Some(wallpaper) => format!("{} on every monitor", describe(wallpaper)),
+        None if desktop.outputs.is_empty() => "nothing".to_owned(),
+        None => "nothing on every monitor".to_owned(),
+    }];
+    let mut own: Vec<_> = desktop.outputs.iter().collect();
+    own.sort();
+    parts.extend(own.into_iter().map(|(output, wallpaper)| format!("{output}: {}", describe(wallpaper))));
+    parts.join("; ")
+}
+
+/// Where the daemon says what it waits on the renderer for, while it waits:
+/// the renderer answers nothing while it loads, so the window learns it here.
+fn busy_file() -> PathBuf {
+    runtime_dir().join("busy.json")
+}
+
+fn set_busy(busy: Option<&Busy>) {
+    let value = match busy {
+        None => {
+            let _ = std::fs::remove_file(busy_file());
+            return;
+        }
+        Some(Busy::Starting) => json!({ "doing": "start" }),
+        Some(Busy::Showing { output, wallpaper }) => {
+            json!({ "doing": "show", "output": output, "wallpaper": wallpaper })
+        }
+    };
+    // Whole or not at all: a reader never sees half of it.
+    let part = runtime_dir().join("busy.json.part");
+    if std::fs::write(&part, value.to_string()).is_ok() {
+        let _ = std::fs::rename(&part, busy_file());
+    }
+}
+
+/// What the daemon waits on the renderer for, and since how long.
+fn busy() -> Option<(Busy, Duration)> {
+    let text = std::fs::read_to_string(busy_file()).ok()?;
+    let since = std::fs::metadata(busy_file()).and_then(|m| m.modified()).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    let busy = match value["doing"].as_str()? {
+        "start" => Busy::Starting,
+        "show" => Busy::Showing {
+            output: value["output"].as_str()?.to_owned(),
+            wallpaper: PathBuf::from(value["wallpaper"].as_str()?),
+        },
+        _ => return None,
+    };
+    Some((busy, since.elapsed().unwrap_or_default()))
+}
+
+/// Whether a daemon runs: it holds its lock.
+pub fn daemon_running() -> bool {
+    lock_file().is_some_and(|lock| lock.try_lock().is_err())
+}
+
+/// What the daemon and the renderer say now, for the window and `we-linux
+/// status`. Quick: the renderer is asked only when the daemon is not waiting
+/// on it (it answers nothing while it loads), and not for long.
+pub fn seen() -> Seen {
+    let daemon = daemon_running();
+    let busy = if daemon { busy() } else { None };
+    let quick = Duration::from_millis(800);
+    let (shown, optimising) = if busy.is_none() {
+        let outputs = ask(&socket(), &json!({ "cmd": "get", "path": "outputs" }), quick).ok();
+        let shown = outputs.map(|outputs| {
+            outputs
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter_map(|(name, output)| {
+                    Some((name.clone(), PathBuf::from(output["wallpaper"]["path"].as_str()?)))
+                })
+                .collect()
+        });
+        let optimising = ask(&socket(), &json!({ "cmd": "get", "path": "memory/optimising" }), quick)
+            .ok()
+            .and_then(|n| n.as_u64())
+            .unwrap_or(0) as usize;
+        (shown, optimising)
+    } else {
+        (None, 0)
+    };
+    Seen { daemon, busy, shown, errors: fresh_errors(), optimising }
+}
+
+/// The daemon's errors, unless they are older than desktop.json: then they
+/// are of what was set before, and the daemon has not looked at the new one yet.
+fn fresh_errors() -> Vec<(PathBuf, String)> {
+    let modified = |path: PathBuf| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    if modified(errors_file()) >= modified(desktop::desktop_file()) { errors() } else { Vec::new() }
+}
 
 fn lock_file() -> Option<std::fs::File> {
     std::fs::create_dir_all(runtime_dir()).ok()?;
@@ -860,8 +971,9 @@ fn spawn(settings: &Settings) -> Result<Child, String> {
     let dir = runtime_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     // A new file, not the old one emptied: what reads it sees a new renderer.
-    let _ = std::fs::remove_file(dir.join("engine.log"));
-    let log = std::fs::File::create(dir.join("engine.log")).map_err(|e| e.to_string())?;
+    // The one before is kept beside it: it may tell why that renderer went.
+    retire_engine_log();
+    let log = std::fs::File::create(engine_log()).map_err(|e| e.to_string())?;
     // The renderer keeps what it showed last there: ours is in desktop.json,
     // so it starts with nothing and is told.
     let state = dir.join("engine-state.json");
@@ -891,6 +1003,29 @@ fn spawn(settings: &Settings) -> Result<Child, String> {
         });
     }
     command.spawn().map_err(|e| e.to_string())
+}
+
+/// The renderer's log: what it says on stderr.
+pub fn engine_log() -> PathBuf {
+    runtime_dir().join("engine.log")
+}
+
+/// The log of the renderer before the one running now.
+pub fn engine_log_before() -> PathBuf {
+    runtime_dir().join("engine.log.1")
+}
+
+fn retire_engine_log() {
+    let _ = std::fs::rename(engine_log(), engine_log_before());
+}
+
+/// The last lines a renderer wrote, for the line that says it exited.
+fn last_words(lines: usize) -> String {
+    let log = std::fs::read_to_string(engine_log()).unwrap_or_default();
+    let mut last: Vec<String> =
+        log.lines().rev().map(strip_colours).filter(|l| !l.trim().is_empty()).take(lines).collect();
+    last.reverse();
+    last.join(" / ")
 }
 
 /// Stop our renderer: asked to quit (no longer than a moment: one that hangs
@@ -1013,11 +1148,21 @@ fn watch_files(wake: Sender<()>) {
 }
 
 pub fn run_daemon() {
+    log::as_role("daemon");
     let Some(lock) = lock_file() else { return };
     if lock.try_lock().is_err() {
         eprintln!("we-linux: the daemon is running already");
         return;
     }
+    let side = compositor::current();
+    log::info(format!(
+        "started: we-linux {} on {}; compositor: {} {}; renderer: {}",
+        env!("CARGO_PKG_VERSION"),
+        log::today(),
+        side.name(),
+        side.version().unwrap_or_else(|| "(no version said)".into()),
+        bin(ENGINE).map_or_else(|| "NOT FOUND".to_owned(), |p| p.display().to_string())
+    ));
     let (wake, woken) = channel();
     // Until something changes; a renderer that died is looked at again in a
     // few seconds.
@@ -1051,12 +1196,17 @@ pub fn run_daemon() {
     // does not go with it) is stopped before its socket goes, else it would
     // draw and play next to ours.
     if !put_down(&socket(), Duration::from_secs(1)) {
-        eprintln!("we-linux: the renderer an earlier daemon left does not stop");
+        log::error("the renderer an earlier daemon left does not stop");
     }
     let _ = std::fs::remove_file(socket());
-    let _ = std::fs::remove_file(runtime_dir().join("engine.log"));
-    // The settings the running renderer has.
+    retire_engine_log();
+    set_busy(None);
+    // Videos the renderer re-encodes, as last said: the log tells when it changes.
+    let mut optimising = 0;
+    // The settings the running renderer has, and whether it refused them
+    // (said once, not every round).
     let mut settings_told: Option<String> = None;
+    let mut settings_refused = false;
     // Monitors whose wallpaper is frozen under a fullscreen window.
     let mut frozen: HashMap<String, bool> = HashMap::new();
     unsafe {
@@ -1066,6 +1216,8 @@ pub fn run_daemon() {
     loop {
         // Told to go: the renderer stops and the desktop gets its picture back.
         if STOP.load(std::sync::atomic::Ordering::Relaxed) {
+            log::info("told to go: the renderer stops and the desktop gets its picture back");
+            set_busy(None);
             if let Some((mut child, _)) = renderer.take() {
                 stop(&mut child);
             }
@@ -1092,6 +1244,7 @@ pub fn run_daemon() {
         let stamp = std::fs::metadata(desktop::desktop_file()).and_then(|m| m.modified()).ok();
         if stamp != desktop_stamp {
             desktop_stamp = stamp;
+            log::info(format!("the desktop: {}", describe_desktop(&desktop)));
             broken.clear();
             short_lives = 0;
             down = None;
@@ -1116,9 +1269,17 @@ pub fn run_daemon() {
         if let Some((child, since)) = &mut renderer
             && let Ok(Some(status)) = child.try_wait()
         {
+            log::warn(format!(
+                "the renderer exited ({status}) after {} s; its last words: {}",
+                since.elapsed().as_secs(),
+                last_words(3)
+            ));
             short_lives = if since.elapsed() < SHORT_LIFE { short_lives + 1 } else { 0 };
             if short_lives >= SHORT_LIVES {
-                down = Some(format!("the renderer keeps exiting ({status}): see `we-linux doctor`"));
+                log::error(format!(
+                    "the renderer exited {short_lives} times in a row soon after starting: it is not started again until something is set"
+                ));
+                down = Some(format!("the renderer keeps exiting ({status}): see `we-linux logs`"));
                 // No scene to stand in for: the user's own picture is better
                 // than a still of what did not load.
                 restore_images();
@@ -1128,15 +1289,31 @@ pub fn run_daemon() {
         }
         if !live || hidden {
             if let Some((mut child, _)) = renderer.take() {
+                log::info(if hidden {
+                    "every monitor is to stop under what covers it: the renderer is stopped, and its memory freed"
+                } else {
+                    "nothing live to show: the renderer is stopped"
+                });
                 stop(&mut child);
                 RENDERER.store(0, std::sync::atomic::Ordering::Relaxed);
-                let _ = std::fs::remove_file(runtime_dir().join("engine.log"));
+                retire_engine_log();
             }
         } else if renderer.is_none() && short_lives < SHORT_LIVES {
-            match spawn(&settings) {
+            set_busy(Some(&Busy::Starting));
+            let spawned = spawn(&settings);
+            match spawned {
                 Ok(mut child) => {
                     RENDERER.store(child.id() as i32, std::sync::atomic::Ordering::Relaxed);
+                    log::info(format!("the renderer started (pid {})", child.id()));
                     await_renderer(&mut child);
+                    set_busy(None);
+                    // Its size is not known yet when it has just found a monitor.
+                    let monitors: Vec<String> = outputs().into_iter().map(|(name, _, _)| name).collect();
+                    if monitors.is_empty() {
+                        log::warn("the renderer has not found the monitors yet");
+                    } else {
+                        log::info(format!("the renderer draws on {}", monitors.join(", ")));
+                    }
                     renderer = Some((child, Instant::now()));
                     down = None;
                     // A new renderer plays on every monitor, with these settings,
@@ -1146,8 +1323,9 @@ pub fn run_daemon() {
                     settings_told = Some(format!("{:?}", told(&settings, false)));
                 }
                 Err(e) => {
+                    set_busy(None);
                     if down.as_ref() != Some(&e) {
-                        eprintln!("we-linux: {e}");
+                        log::error(format!("the renderer cannot start: {e}"));
                     }
                     down = Some(e);
                 }
@@ -1160,6 +1338,7 @@ pub fn run_daemon() {
         if renderer.is_some() && running() {
             // Another program's layer went over the renderer's.
             if RESTACK.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                log::info("another program's layer may be over the renderer's: it makes its surfaces anew");
                 let layer = compositor::current().layer();
                 let _ = call(json!({ "cmd": "set", "path": "config/layer", "value": layer }));
             }
@@ -1170,7 +1349,14 @@ pub fn run_daemon() {
                     call(json!({ "cmd": "set", "path": format!("config/{key}"), "value": value })).is_ok()
                 });
                 if all {
+                    let said: Vec<String> =
+                        told(&settings, muted).iter().map(|(key, value)| format!("{key}={value}")).collect();
+                    log::info(format!("the renderer is told the settings: {}", said.join(", ")));
                     settings_told = Some(now);
+                    settings_refused = false;
+                } else if !settings_refused {
+                    log::warn("the renderer did not take the settings: they are told again on every round");
+                    settings_refused = true;
                 }
             }
             // Each monitor gets what it is to show, when it shows something else.
@@ -1178,6 +1364,12 @@ pub fn run_daemon() {
             for (monitor, _, _) in outputs() {
                 // A renderer that hangs answers nothing more this round.
                 if SILENT.get() {
+                    break;
+                }
+                // Set again while the renderer was loading: what this round read
+                // is old, and the next round shows what was set last.
+                if std::fs::metadata(desktop::desktop_file()).and_then(|m| m.modified()).ok() != desktop_stamp
+                {
                     break;
                 }
                 let want = wanted(&desktop, &monitor);
@@ -1202,8 +1394,24 @@ pub fn run_daemon() {
                             );
                         }
                         let request = json!({ "cmd": "show", "wallpaper": wallpaper, "output": monitor, "properties": properties(&wallpaper) });
-                        match call(request) {
+                        log::info(format!(
+                            "asking the renderer to show {} on {monitor}",
+                            describe(&wallpaper)
+                        ));
+                        set_busy(Some(&Busy::Showing {
+                            output: monitor.clone(),
+                            wallpaper: wallpaper.clone(),
+                        }));
+                        let began = Instant::now();
+                        let answer = call(request);
+                        set_busy(None);
+                        match answer {
                             Ok(_) => {
+                                log::info(format!(
+                                    "{monitor} shows {} (in {:.1} s)",
+                                    describe(&wallpaper),
+                                    began.elapsed().as_secs_f32()
+                                ));
                                 frozen.remove(&monitor);
                                 // A video's alignment, as the user set it (else the setting).
                                 let fill = properties(&wallpaper)
@@ -1216,7 +1424,10 @@ pub fn run_daemon() {
                             }
                             Err(_) if SILENT.get() => loading = Some(key),
                             Err(why) => {
-                                eprintln!("we-linux: {}: {why}", wallpaper.display());
+                                log::warn(format!(
+                                    "the renderer did not show {} on {monitor}: {why}",
+                                    describe(&wallpaper)
+                                ));
                                 broken.insert(key, why);
                                 // The monitor keeps what it showed; with nothing there,
                                 // the user's own picture is better than a still.
@@ -1227,6 +1438,7 @@ pub fn run_daemon() {
                         }
                     }
                     None => {
+                        log::info(format!("{monitor} has nothing to show: it is cleared"));
                         let _ = call(json!({ "cmd": "hide", "output": monitor }));
                     }
                 }
@@ -1245,7 +1457,26 @@ pub fn run_daemon() {
                     .is_ok();
                 // A monitor the renderer does not have yet is told on the next round.
                 if told {
+                    log::info(if freeze {
+                        format!("{monitor} is frozen on its frame: something covers it")
+                    } else {
+                        format!("{monitor} plays again")
+                    });
                     frozen.insert(monitor.clone(), freeze);
+                }
+            }
+            // Videos made lighter: what the window says while it lasts.
+            if !SILENT.get() {
+                let now = call(json!({ "cmd": "get", "path": "memory/optimising" }))
+                    .ok()
+                    .and_then(|n| n.as_u64())
+                    .unwrap_or(0) as usize;
+                if now != optimising {
+                    log::info(match now {
+                        0 => "the videos are made lighter: they play from their cheaper copies".to_owned(),
+                        n => format!("the renderer is re-encoding {n} video(s) into cheaper copies"),
+                    });
+                    optimising = now;
                 }
             }
         }
@@ -1262,8 +1493,16 @@ pub fn run_daemon() {
             RENDERER.store(0, std::sync::atomic::Ordering::Relaxed);
             let _ = std::fs::remove_file(socket());
             short_lives += 1;
-            let why = "the renderer stopped answering and was killed: see `we-linux doctor`".to_owned();
-            eprintln!("we-linux: {why}");
+            set_busy(None);
+            let why = "the renderer stopped answering and was killed: see `we-linux logs`".to_owned();
+            match &loading {
+                Some((monitor, wallpaper)) => log::error(format!(
+                    "the renderer did not finish loading {} on {monitor} in {} s and was killed",
+                    describe(wallpaper),
+                    patience(&json!({ "cmd": "show" })).as_secs()
+                )),
+                None => log::error("the renderer stopped answering and was killed"),
+            }
             match loading {
                 Some(key) => {
                     broken.insert(key, "the renderer hung loading it and was killed".to_owned());
@@ -1271,7 +1510,10 @@ pub fn run_daemon() {
                 None => hung = Some(why),
             }
             if short_lives >= SHORT_LIVES {
-                down = Some("the renderer keeps hanging: see `we-linux doctor`".to_owned());
+                log::error(
+                    "the renderer hung three times in a row: it is not started again until something is set",
+                );
+                down = Some("the renderer keeps hanging: see `we-linux logs`".to_owned());
                 restore_images();
             }
         }
@@ -1299,34 +1541,24 @@ pub fn run_daemon() {
     }
 }
 
-/// How far a wallpaper set a moment ago has come.
-pub enum Stage {
-    /// The renderer is starting or loading it.
-    Loading,
-    /// The renderer shows it.
-    Shown,
-    Failed(String),
-}
-
-/// The stage of `wallpaper`: what the renderer says it shows, and what the
-/// daemon could not get it to show.
-pub fn stage(wallpaper: &Path) -> Stage {
-    if shown().iter().any(|(_, path)| path == wallpaper) {
-        return Stage::Shown;
-    }
-    // An error older than desktop.json is of what was set before: the daemon
-    // has not looked at the new one yet.
-    let modified = |path: PathBuf| std::fs::metadata(path).and_then(|m| m.modified()).ok();
-    if modified(errors_file()) >= modified(desktop::desktop_file())
-        && let Some((_, why)) = errors().into_iter().find(|(failed, _)| failed == wallpaper)
-    {
-        return Stage::Failed(why);
-    }
-    Stage::Loading
-}
-
-/// `we-linux doctor`: what a bug report needs, in one paste.
+/// `we-linux doctor`: what a bug report needs, in one paste: the summary,
+/// then the last lines of both logs.
 pub fn doctor() -> String {
+    let mut out = vec![summary()];
+    for (title, path, lines) in [("we-linux log", log::file(), 20), ("renderer log", engine_log(), 40)] {
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            out.push(String::new());
+            out.push(format!("--- {title}, last lines ---"));
+            let all: Vec<&str> = text.lines().collect();
+            out.extend(all[all.len().saturating_sub(lines)..].iter().map(|l| strip_colours(l)));
+        }
+    }
+    out.join("\n")
+}
+
+/// What was found and what runs: the part of `doctor` before the logs, which
+/// `we-linux logs` starts with.
+pub fn summary() -> String {
     let found =
         |path: Option<PathBuf>| path.map_or_else(|| "NOT FOUND".to_owned(), |p| p.display().to_string());
     let output = |program: &str, args: &[&str]| {
@@ -1388,6 +1620,18 @@ pub fn doctor() -> String {
     if let Some(version) = bin(ENGINE).and_then(|engine| output(&engine.to_string_lossy(), &["--version"])) {
         out.push(format!("  {version}"));
     }
+    // Web wallpapers are a plugin's: whether it is there is the first question
+    // when one does not show.
+    let web = plugins().into_iter().find(|p| p.kind == "renderer" && p.name.to_lowercase().contains("web"));
+    out.push(match &web {
+        Some(plugin) => format!(
+            "  web plugin: {}{}, wepaper-web: {}",
+            plugin.path.display(),
+            if plugin.enabled { "" } else { " (TURNED OFF)" },
+            found(bin("wepaper-web"))
+        ),
+        None => "  web plugin: NOT FOUND (web wallpapers do not play)".to_owned(),
+    });
     out.push(format!(
         "ffmpeg: {}",
         output("ffmpeg", &["-version"]).unwrap_or_else(|| {
@@ -1459,17 +1703,16 @@ pub fn doctor() -> String {
         std::fs::read_to_string(desktop::settings_file())
             .map_or_else(|_| "(defaults)".to_owned(), |s| s.split_whitespace().collect::<Vec<_>>().join(" "))
     ));
-    if let Ok(log) = std::fs::read_to_string(runtime_dir().join("engine.log")) {
-        out.push(String::new());
-        out.push("--- renderer log, last lines ---".to_owned());
-        let lines: Vec<&str> = log.lines().collect();
-        out.extend(lines[lines.len().saturating_sub(40)..].iter().map(|l| strip_colours(l)));
-    }
+    out.push(format!(
+        "logs: {} and {}; all of it in order: we-linux logs (-f follows them)",
+        log::file().display(),
+        engine_log().display()
+    ));
     out.join("\n")
 }
 
 /// A log line without its terminal colour codes.
-fn strip_colours(line: &str) -> String {
+pub fn strip_colours(line: &str) -> String {
     let mut out = String::new();
     let mut chars = line.chars();
     while let Some(c) = chars.next() {

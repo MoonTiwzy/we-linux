@@ -240,7 +240,10 @@ we-linux apply <ID|PATH> [--output NAME]  a workshop id, a wallpaper folder, a v
 we-linux off                              no live wallpaper
 we-linux status                           what is on the desktop
 we-linux doctor                           a full report for a bug: versions, what was found,
-                                          the settings, the engine's log
+                                          the settings, the logs' last lines
+we-linux logs [-f]                        what was found, then everything the daemon, the
+                                          window, the renderer and the hook said, in order;
+                                          -f follows the logs live
 we-linux workshop [TEXT] [--sort top|trend|new|subs|updated] [--type scene|video|web] [--page N]
                                           search the workshop: id, size, votes, title
 we-linux subscribe ID...                  subscribe and wait for Steam to download
@@ -287,13 +290,21 @@ same switches and the hook:
 | Changed properties of a wallpaper | `~/.config/we-linux/properties/<id>.json` |
 | The playlist and saved playlists | `~/.config/we-linux/playlist.json`, `playlists/` |
 | Preview and still caches | `~/.cache/we-linux/` |
-| The renderer's log | `$XDG_RUNTIME_DIR/we-linux/engine.log` |
+| What WE Linux did: the daemon and the window (`we-linux.log.1`: the part before) | `$XDG_RUNTIME_DIR/we-linux/we-linux.log` |
+| The renderer's log (`engine.log.1`: the renderer before this one) | `$XDG_RUNTIME_DIR/we-linux/engine.log` |
 | What the hook printed last | `$XDG_RUNTIME_DIR/we-linux/hook.log` |
 
 ## Troubleshooting
 
-Something does not work? Run `we-linux doctor` and read what it says is `NOT FOUND` or
-`NOT RUNNING`; paste its output into an issue if that does not explain it.
+Something does not work? Run `we-linux logs`. It starts with what was found (anything
+`NOT FOUND` or `NOT RUNNING` is the first suspect), then tells what happened, in order: which
+wallpaper was set, what the daemon asked the renderer, what the renderer answered and why it
+refused, when it started, exited or hung. Paste its output into an issue if that does not
+explain it. `we-linux logs -f` follows the logs while you try again; `we-linux doctor` is the
+short version, with only the last lines of each log.
+
+A wallpaper the renderer will not show says so in the window too: a red bar over the grid
+with the reason and what to do, until you set something else.
 
 | You see | Do this |
 |---|---|
@@ -301,11 +312,12 @@ Something does not work? Run `we-linux doctor` and read what it says is `NOT FOU
 | "libsteam_api.so was not found" | Install any native Linux game in Steam (a free one is fine). The workshop picks it up by itself within a few seconds. |
 | "no libsteam_api.so this WE Linux can use" | The games' copies are of another Steamworks version; the message says which file and why. Install another native game, update WE Linux, or name a fitting copy in `WE_LINUX_STEAM_API`. |
 | "Steam was closed" | Start Steam again: the workshop comes back by itself. Your library and the wallpapers on the desktop are not affected. |
-| A wallpaper is set but the desktop does not change | `we-linux status`. It prints the error: usually Wallpaper Engine itself is not installed in Steam (no `assets`), or `wepaper` is not on the PATH. Then look at the renderer's log. |
+| A wallpaper is set but the desktop does not change | `we-linux logs`. The renderer's reason is there: usually Wallpaper Engine itself is not installed in Steam (no `assets`), `wepaper` is not on the PATH, or a web wallpaper and no `wepaper-web` plugin. |
+| "Web wallpapers need the wepaper-web plugin" | The renderer's web plugin is not installed. `./install.sh --engine` builds it when GTK 4, WebKitGTK 6 and gtk4-layer-shell are installed; on NixOS, update the flake: the package carries it. `we-linux doctor` says whether it is found. |
 | The static wallpaper covers the live one | Hyprland: the daemon's layer rule did not take, add it by hand (Compositors). Other compositors: start `we-linux daemon` after your wallpaper program. |
 | The wallpaper is gone after a reboot | Start `we-linux daemon` with your session (First run). |
 | The wallpaper freezes when a game starts | That is the fullscreen freeze, it goes on when the desktop is back. Turn it off in Settings to keep it running. |
-| "did not start: not enough video memory" | The scene does not fit your graphics card with what else is open. Close something heavy (a browser with video, a game) and set it again, or pick a lighter wallpaper: 4K scenes with many layers are the expensive ones. |
+| "Not enough video memory" | The scene does not fit your graphics card with what else is open. Close something heavy (a browser with video, a game) and set it again, or pick a lighter wallpaper: 4K scenes with many layers are the expensive ones. |
 | High CPU on a scene with a video | Lower the frame rate to 30, or switch video decoding to the GPU in Settings (costs video memory). |
 | A scene looks wrong | Run `wepaper check <the wallpaper's folder>`: it names what the renderer leaves out and why. Report it to [wepaper](https://github.com/MoonTiwzy/wepaper/issues) with that output. |
 

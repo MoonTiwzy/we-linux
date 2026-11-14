@@ -1,24 +1,21 @@
 //! What is on the desktop: setting the selected wallpaper (on every monitor
-//! or on the one chosen), following it until the renderer shows it, the
-//! monitor chooser and its profiles, a file opened from the disk, and
+//! or on the one chosen; `progress` follows it until the renderer shows it),
+//! the monitor chooser and its profiles, a file opened from the disk, and
 //! "Отмена", which puts back what was there when the window opened.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use slint::{
     ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer, TimerMode, VecModel,
 };
 use we_linux_ui::MonitorEntry;
 
+use super::progress::Applying;
 use super::saved::Saved;
 use super::{App, slot};
 use crate::lang::t;
 use crate::{desktop, engine, tf};
-
-/// A wallpaper was set and is not on the desktop yet: its title, where it
-/// goes (a monitor, or all), its folder and when it was set.
-type Applying = (String, Option<String>, PathBuf, Instant);
 
 pub(super) struct Desk {
     /// What every monitor shows, and what it showed when the window opened ("Отмена").
@@ -26,7 +23,6 @@ pub(super) struct Desk {
     opened_with: desktop::Desktop,
     /// The monitor wallpapers are set on: None is all of them.
     monitor: Option<String>,
-    applying: Option<Applying>,
     /// "Choose monitor" comes down when the window opens.
     monitors_on_start: bool,
 }
@@ -57,7 +53,6 @@ impl Desk {
             current: desktop::current(),
             opened_with: desktop::Desktop::load(),
             monitor: None,
-            applying: None,
             monitors_on_start: true,
         }
     }
@@ -127,7 +122,7 @@ impl App {
             return;
         };
         let desk = &mut self.desk;
-        // "On the desktop" is said when the engine shows it (show_applying).
+        // "On the desktop" is said when the renderer shows it (progress.rs).
         let result = match &desk.monitor {
             Some(output) => desktop::apply_to(output, &dir),
             None => desktop::clear_outputs()
@@ -136,55 +131,19 @@ impl App {
         };
         match result {
             Ok(()) => {
-                desk.applying = Some((card.title.clone(), desk.monitor.clone(), dir, Instant::now()));
-                self.show_applying();
+                let applying = Applying::new(&card.title, &dir, desk.monitor.clone());
+                self.follow_applying(applying);
             }
-            Err(e) => self.status(tf!("That did not work: {e}", "Не получилось: {e}")),
+            Err(e) => self.warn(tf!("That did not work: {e}", "Не получилось: {e}")),
         }
         self.refresh_marks();
         self.show_monitors();
     }
 
-    /// Say how far the wallpaper set last has come, until it is on the desktop.
-    fn show_applying(&mut self) {
-        let Some((title, monitor, dir, since)) = self.desk.applying.clone() else {
-            return;
-        };
-        let waited = since.elapsed().as_secs();
-        match engine::stage(&dir) {
-            engine::Stage::Shown => {
-                self.desk.applying = None;
-                match monitor {
-                    Some(output) => self
-                        .status(tf!("\"{title}\" is on monitor {output}", "«{title}» на мониторе {output}")),
-                    None => self.status(tf!("\"{title}\" is on the desktop", "«{title}» на рабочем столе")),
-                }
-            }
-            engine::Stage::Failed(error) => {
-                self.desk.applying = None;
-                let error = if error.contains("video memory") {
-                    t("not enough video memory for this wallpaper", "этим обоям не хватает видеопамяти")
-                        .to_owned()
-                } else {
-                    error
-                };
-                self.status(tf!("\"{title}\" did not start: {error}", "«{title}» не запустились: {error}"));
-            }
-            _ if waited > 180 => {
-                self.desk.applying = None;
-                self.status(tf!(
-                    "\"{title}\" is taking too long: see `we-linux doctor`",
-                    "«{title}» грузятся слишком долго: смотри `we-linux doctor`"
-                ));
-            }
-            engine::Stage::Loading => self.status(tf!("\"{title}\": loading…", "«{title}»: загрузка…")),
-        }
-    }
-
-    /// The timer of `follow`: what was set is said once it shows, and a
-    /// wallpaper changed from outside is marked.
+    /// The timer of `follow`: what was set is followed until it shows, and
+    /// a wallpaper changed from outside is marked.
     fn follow_desktop(&mut self) {
-        self.show_applying();
+        self.progress_tick();
         let current = desktop::current();
         if current != self.desk.current {
             self.desk.current = current;
@@ -207,12 +166,24 @@ impl App {
                 if result.is_ok() {
                     self.desk.current = desktop::current();
                 }
-                self.report(result, &tf!("{} is on the desktop", "{} на рабочем столе", target.display()));
+                // A live one is followed until it shows; a picture is there at once.
+                match (&result, self.desk.current.clone()) {
+                    (Ok(()), Some(dir)) => {
+                        let title =
+                            target.file_stem().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                        let title = self.catalog.at(&dir).map_or(title, |i| i.title.clone());
+                        self.follow_applying(Applying::new(&title, &dir, None));
+                    }
+                    _ => self.report(
+                        result,
+                        &tf!("{} is on the desktop", "{} на рабочем столе", target.display()),
+                    ),
+                }
                 self.refresh_marks();
                 self.show_monitors();
             }
             Ok(None) => {}
-            Err(e) => self.status(tf!("That did not work: {e}", "Не получилось: {e}")),
+            Err(e) => self.warn(tf!("That did not work: {e}", "Не получилось: {e}")),
         }
     }
 

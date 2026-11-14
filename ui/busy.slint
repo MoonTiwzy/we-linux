@@ -1,0 +1,234 @@
+// What the window shows while a wallpaper is on its way to the desktop, and when it
+// does not get there, in the original's manner: its loader (the logo, its teeth
+// turning), the dimmed picture with the stage in blue under it (the editor's
+// "busy" overlay), the toast at the bottom (the one of an upload to a phone),
+// and the red alert over the grid.
+
+import { Theme, L } from "theme.slint";
+import { Icons, Icon, Glyph } from "icons.slint";
+
+// The loader: a ring and its teeth, the teeth turning a quarter a second as
+// the original's logo turns them. Drawn as paths worked out for each frame:
+// the software renderer does not turn an element.
+export component Spinner inherits Rectangle {
+    in property <length> size: 40px;
+    in property <color> tint: Theme.primary;
+    in property <bool> turning: true;
+    width: root.size;
+    height: root.size;
+    // 90 degrees a second, as the original's 45 in half a second.
+    property <angle> turn: root.turning ? (mod(animation-tick() / 1ms, 4000) / 4000) * 360deg : 0deg;
+    // The ring: drawn between two circles, the inner one left open.
+    Path {
+        width: root.size;
+        height: root.size;
+        viewbox-width: 100;
+        viewbox-height: 100;
+        fill: root.tint;
+        fill-rule: evenodd;
+        commands: "M 20 50 A 30 30 0 1 0 80 50 A 30 30 0 1 0 20 50 Z M 34 50 A 16 16 0 1 1 66 50 A 16 16 0 1 1 34 50 Z";
+    }
+    for n in 8: Path {
+        property <angle> a: root.turn + n * 45deg;
+        // The tooth: from inside the ring out, 15 wide.
+        property <float> ux: cos(self.a);
+        property <float> uy: sin(self.a);
+        property <float> inner: 26;
+        property <float> outer: 44;
+        property <float> half: 7.5;
+        width: root.size;
+        height: root.size;
+        viewbox-width: 100;
+        viewbox-height: 100;
+        fill: root.tint;
+        commands: "M " + (50 + self.ux * self.inner - self.uy * self.half) + " " + (50 + self.uy * self.inner + self.ux * self.half)
+            + " L " + (50 + self.ux * self.outer - self.uy * self.half) + " " + (50 + self.uy * self.outer + self.ux * self.half)
+            + " L " + (50 + self.ux * self.outer + self.uy * self.half) + " " + (50 + self.uy * self.outer - self.ux * self.half)
+            + " L " + (50 + self.ux * self.inner + self.uy * self.half) + " " + (50 + self.uy * self.inner - self.ux * self.half) + " Z";
+    }
+}
+
+// Over a wallpaper's picture while it is being set (state 1: the loader; 2: next
+// in line), or after it was not (3): the picture dimmed as the original's busy
+// editor preview, the stage in blue under it ("[Загружается сцена]").
+export component Busy inherits Rectangle {
+    in property <int> state;
+    in property <string> text;
+    in property <length> spinner: 44px;
+    in property <length> font-size: 12.6px;
+    visible: root.state > 0;
+    background: #090909b3;
+    VerticalLayout {
+        alignment: center;
+        spacing: root.spinner * 0.25;
+        HorizontalLayout {
+            alignment: center;
+            if root.state == 1: Spinner { size: root.spinner; }
+            if root.state == 2: Spinner { size: root.spinner; turning: false; tint: #4183f580; }
+            if root.state == 3: Rectangle {
+                width: root.spinner;
+                height: root.spinner;
+                Icon {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    glyph: Icons.triangle-exclamation;
+                    size: root.spinner * 0.8;
+                    tint: Theme.danger;
+                }
+            }
+        }
+        if root.text != "": Text {
+            text: "[" + root.text + "]";
+            color: root.state == 3 ? Theme.danger : Theme.primary;
+            font-size: root.font-size;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// The toast at the bottom of the window while a wallpaper is on its way: the loader
+// at the left, the title, and in blue what is being done. kind: 0 loading, 1 on the
+// desktop, 2 next in line, 3 no word from the renderer.
+export component Toast inherits Rectangle {
+    in property <bool> shown;
+    in property <int> kind;
+    in property <string> title;
+    in property <string> info;
+    width: 340px;
+    height: 57px;
+    background: #3c3c3c;
+    drop-shadow-offset-y: 3px;
+    drop-shadow-blur: 3px;
+    drop-shadow-color: #00000080;
+    opacity: root.shown ? 1 : 0;
+    animate opacity { duration: 300ms; easing: ease; }
+    // It holds no clicks: the window under it is still the window.
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 5px;
+        Rectangle {
+            width: 40px;
+            if root.kind == 0: Spinner {
+                x: 0;
+                y: (parent.height - self.height) / 2;
+                size: 34px;
+                turning: root.shown;
+            }
+            if root.kind == 2: Spinner {
+                x: 0;
+                y: (parent.height - self.height) / 2;
+                size: 34px;
+                turning: false;
+                tint: #4183f580;
+            }
+            if root.kind == 1 || root.kind == 3: Icon {
+                x: 4px;
+                y: (parent.height - self.height) / 2;
+                glyph: root.kind == 1 ? Icons.check : Icons.triangle-exclamation;
+                size: 24px;
+                tint: root.kind == 1 ? Theme.primary : #f0ad4e;
+            }
+        }
+        VerticalLayout {
+            padding: 5px;
+            spacing: 2px;
+            alignment: center;
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: 15.7px;
+                overflow: elide;
+            }
+            Text {
+                text: root.info;
+                color: root.kind == 3 ? #f0ad4e : Theme.primary;
+                font-size: Theme.size;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+// A refusal, over the grid as the original's alerts are, red as its "danger" one:
+// what happened in a line, what it means and what to do, the button that does it
+// (a pill, as the alerts' buttons are), and the cross.
+export component Alert inherits Rectangle {
+    in property <string> headline;
+    in property <string> body;
+    in property <string> action;
+    in property <Glyph> action-icon;
+    in property <bool> narrow;
+    callback act;
+    callback closed;
+    height: words.preferred-height + (root.narrow ? 12px : 30px);
+    background: #c46764;
+    border-width: 1px;
+    border-color: #a02622;
+    words := VerticalLayout {
+        x: root.narrow ? 6px : 15px;
+        y: (parent.height - self.height) / 2;
+        width: parent.width - self.x - (root.action != "" ? pill.width + 24px : 0px) - 44px;
+        height: self.preferred-height;
+        alignment: start;
+        spacing: 3px;
+        Text {
+            text: root.headline;
+            color: Theme.white;
+            font-size: Theme.size;
+            font-weight: 700;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.body;
+            color: Theme.white;
+            font-size: Theme.size;
+            wrap: word-wrap;
+        }
+    }
+    pill := Rectangle {
+        visible: root.action != "";
+        x: parent.width - self.width - 44px;
+        y: (parent.height - self.height) / 2;
+        width: pill-row.preferred-width + 24px;
+        height: 26px;
+        border-radius: 12px;
+        background: pill-ta.pressed ? #a6a6a6 : pill-ta.has-hover ? #b3b3b3 : #cccccc;
+        animate background { duration: 70ms; }
+        pill-row := HorizontalLayout {
+            x: 12px;
+            width: parent.width - 24px;
+            spacing: 5px;
+            alignment: center;
+            if root.action-icon.w > 0: Rectangle {
+                width: pill-icon.width;
+                pill-icon := Icon {
+                    y: (parent.height - self.height) / 2;
+                    glyph: root.action-icon;
+                    size: Theme.size;
+                    tint: #333333;
+                }
+            }
+            Text {
+                text: root.action;
+                color: #333333;
+                font-size: Theme.size;
+                vertical-alignment: center;
+            }
+        }
+        pill-ta := TouchArea {
+            clicked => { root.act(); }
+        }
+    }
+    Text {
+        x: parent.width - self.width - 8px;
+        y: (parent.height - self.height) / 2 - 3px;
+        text: "×";
+        color: close-ta.has-hover ? Theme.white : #ffffffaa;
+        font-size: 35px;
+        font-weight: 700;
+        close-ta := TouchArea {
+            clicked => { root.closed(); }
+        }
+    }
+}

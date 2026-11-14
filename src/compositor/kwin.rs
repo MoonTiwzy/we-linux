@@ -169,7 +169,7 @@ impl Compositor for Kwin {
         let Some(bus) = bus() else { return };
         let listener = Listener { report: Arc::clone(&self.report), changes };
         if bus.object_server().at(PATH, listener).is_err() || load(bus).is_none() {
-            eprintln!("we-linux: KWin did not take the script that says which windows cover the screens");
+            crate::log::warn("KWin did not take the script that says which windows cover the screens");
         }
         // KWin started anew (it crashed, or was replaced) has no script.
         std::thread::spawn(move || {
