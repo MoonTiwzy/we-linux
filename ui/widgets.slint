@@ -570,21 +570,31 @@ export component Menu inherits Rectangle {
     height: 0;
     public function show() {
         root.unfold = 0;
+        root.open-sub = -1;
         popup.show();
         root.unfold = 1;
     }
     public function close() {
         popup.close();
     }
+    // One popup holds the menu and the list a line opens beside it: a popup
+    // over a popup takes every click and every hover for itself, and the menu
+    // under it would be dead until it is closed.
     popup := PopupWindow {
         x: 0;
         y: root.up ? -lines.preferred-height : 0;
-        width: root.menu-width;
-        height: lines.preferred-height;
+        width: root.menu-width * 2;
+        height: max(lines.preferred-height, root.sub-y - 5px + more.preferred-height);
         close-policy: close-on-click-outside;
+        // Beside the menu where no list is open: a click there is a click outside.
+        TouchArea {
+            clicked => { popup.close(); }
+        }
         Rectangle {
-            y: root.up ? parent.height * (1 - root.unfold) : 0;
-            height: parent.height * root.unfold;
+            x: 0;
+            width: root.menu-width;
+            y: root.up ? lines.preferred-height * (1 - root.unfold) : 0;
+            height: lines.preferred-height * root.unfold;
             animate y, height { duration: 100ms; easing: ease-out; }
             clip: true;
             background: Theme.menu;
@@ -595,37 +605,28 @@ export component Menu inherits Rectangle {
                 icons: true;
                 activated(id) => {
                     root.activated(id);
-                    side.close();
                     popup.close();
                 }
                 opened(sub, at) => {
                     root.open-sub = sub;
                     root.sub-y = at;
-                    if sub >= 0 {
-                        side.show();
-                    } else {
-                        side.close();
-                    }
                 }
             }
         }
-        side := PopupWindow {
+        Rectangle {
             x: root.menu-width;
             y: root.sub-y - 5px;
             width: root.menu-width;
             height: more.preferred-height;
-            close-policy: no-auto-close;
-            Rectangle {
-                background: Theme.menu;
-                more := MenuLines {
-                    width: parent.width;
-                    entries: root.open-sub >= 0 && root.open-sub < root.submenus.length ? root.submenus[root.open-sub] : [];
-                    icons: true;
-                    activated(id) => {
-                        root.activated(id);
-                        side.close();
-                        popup.close();
-                    }
+            visible: root.open-sub >= 0;
+            background: Theme.menu;
+            more := MenuLines {
+                width: parent.width;
+                entries: root.open-sub >= 0 && root.open-sub < root.submenus.length ? root.submenus[root.open-sub] : [];
+                icons: true;
+                activated(id) => {
+                    root.activated(id);
+                    popup.close();
                 }
             }
         }

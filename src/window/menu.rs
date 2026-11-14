@@ -118,12 +118,15 @@ impl App {
         entries.push(submenu(t("View", "Вид"), icons.get_eye(), 3));
 
         let owner = self.catalog.owner_of(&card);
-        let author = self.catalog.persona(owner).map_or("?".to_owned(), |(name, _)| name.clone());
+        let known = self.catalog.persona(owner).map(|(name, _)| name.clone());
+        let author = known.clone().unwrap_or_else(|| t("the author", "автора").to_owned());
         if owner != 0 && self.catalog.persona(owner).is_none() {
             let _ = self.steam.send(Command::Persona(owner));
         }
         let related = vec![line(
-            &tf!("Browse all by {author} (?)", "Просмотреть всё от {author} (?)"),
+            // The original adds how many there are; that takes a query of its own,
+            // and a "?" in its place says nothing.
+            &tf!("Browse all by {author}", "Просмотреть всё от {author}"),
             icons.get_user(),
             "author",
             owner != 0 && steam_ok,
