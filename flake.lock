@@ -18,7 +18,28 @@
     },
     "root": {
       "inputs": {
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "wepaper": "wepaper"
+      }
+    },
+    "wepaper": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1794630736,
+        "narHash": "sha256-B4CeZ4G6zfA5TDB4zAW1wZaK8ws2nBea1rJZ1ACvC8I=",
+        "owner": "MoonTiwzy",
+        "repo": "wepaper",
+        "rev": "c32ea40438e66837834b6a78b8710f9361f69463",
+        "type": "github"
+      },
+      "original": {
+        "owner": "MoonTiwzy",
+        "repo": "wepaper",
+        "type": "github"
       }
     }
   },

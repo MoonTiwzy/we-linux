@@ -15,7 +15,7 @@
 
 rustPlatform.buildRustPackage {
   pname = "we-linux";
-  version = (lib.importTOML ../Cargo.toml).package.version;
+  version = (lib.importTOML ../Cargo.toml).workspace.package.version;
 
   src = lib.cleanSourceWith {
     src = ../.;
