@@ -165,10 +165,20 @@ pub fn look_of(name: &str, value: &Value, colours: bool) -> Option<(&'static str
 /// The names of a wallpaper's own properties: a built-in one of the same
 /// name is not built in for that wallpaper.
 pub fn own_names(dir: &Path) -> Vec<String> {
-    std::fs::read(dir.join("project.json"))
+    let json = std::fs::read(dir.join("project.json"))
         .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .and_then(|json| json.pointer("/general/properties").and_then(Value::as_object).cloned())
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+    // A preset's are those of the wallpaper it is for.
+    if let Some(base) = json
+        .as_ref()
+        .filter(|json| json.get("file").is_none())
+        .and_then(|json| json["dependency"].as_str())
+        .and_then(|id| dir.parent().map(|all| all.join(id)))
+        .filter(|base| base != dir && base.join("project.json").is_file())
+    {
+        return own_names(&base);
+    }
+    json.and_then(|json| json.pointer("/general/properties").and_then(Value::as_object).cloned())
         .map(|map| map.keys().cloned().collect())
         .unwrap_or_default()
 }
@@ -213,6 +223,21 @@ pub fn load(dir: &Path) -> Vec<Property> {
     let Ok(json) = serde_json::from_slice::<Value>(&bytes) else {
         return Vec::new();
     };
+    // A preset is another wallpaper with values of its own: it has that
+    // wallpaper's properties, and what it sets is where each of them starts.
+    if json.get("file").is_none()
+        && let Some(base) = json["dependency"].as_str().and_then(|id| dir.parent().map(|all| all.join(id)))
+        && base != dir
+        && base.join("project.json").is_file()
+    {
+        let mut rows = load(&base);
+        for row in &mut rows {
+            if let Some(value) = json["preset"].get(&row.name).filter(|value| !value.is_null()) {
+                row.default = value.clone();
+            }
+        }
+        return rows;
+    }
     // A video gets all of the built-in ones; every other wallpaper how loud
     // and how fast it plays, which is what one reaches for most.
     let builtin = if json["type"].as_str().is_some_and(|t| t.eq_ignore_ascii_case("video")) {
@@ -433,6 +458,31 @@ mod tests {
         assert!(!same(&json!(true), &json!(false)));
         assert!(!same(&json!(null), &json!("")));
         assert!(same(&json!(null), &json!(null)));
+    }
+
+    #[test]
+    fn a_preset_has_the_properties_of_the_wallpaper_it_is_for_starting_at_its_own_values() {
+        let root = std::env::temp_dir().join(format!("we-linux-preset-{}", std::process::id()));
+        let (base, preset) = (root.join("100"), root.join("200"));
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&preset).unwrap();
+        std::fs::write(
+            base.join("project.json"),
+            r#"{ "type": "scene", "file": "scene.json", "general": { "properties": {
+                "speed": { "type": "slider", "text": "Speed", "value": 1, "min": 0, "max": 5 },
+                "name": { "type": "textinput", "text": "Name", "value": "none" } } } }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            preset.join("project.json"),
+            r#"{ "dependency": "100", "preset": { "speed": 3, "unknown": 1 } }"#,
+        )
+        .unwrap();
+        let rows = load(&preset);
+        let of = |name: &str| rows.iter().find(|row| row.name == name).map(|row| row.default.clone());
+        assert_eq!(of("speed"), Some(json!(3)));
+        assert_eq!(of("name"), Some(json!("none")));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn values(pairs: Value) -> serde_json::Map<String, Value> {
