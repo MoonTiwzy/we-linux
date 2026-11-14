@@ -618,7 +618,7 @@ fn edits(a: &str, b: &str) -> usize {
 }
 
 /// The window behind a panel over it, blurred as the original's backdrop is:
-/// drawn small, softened, and scaled back up by the image itself.
+/// drawn small, softened, and scaled back up.
 fn blurred(shot: &SharedPixelBuffer<Rgba8Pixel>) -> Image {
     let (width, height) = (shot.width(), shot.height());
     let Some(full) = image::RgbaImage::from_raw(width, height, shot.as_bytes().to_vec()) else {
@@ -626,6 +626,9 @@ fn blurred(shot: &SharedPixelBuffer<Rgba8Pixel>) -> Image {
     };
     let small = image::imageops::thumbnail(&full, (width / 8).max(1), (height / 8).max(1));
     let soft = image::imageops::blur(&small, 1.5);
+    // Scaled back up here, smoothly: the window's renderer would repeat each
+    // pixel of the small picture, and the blur would be a mosaic.
+    let soft = image::imageops::resize(&soft, width, height, image::imageops::FilterType::Triangle);
     Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
         soft.as_raw(),
         soft.width(),

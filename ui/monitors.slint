@@ -39,11 +39,12 @@ export component MonitorPanel inherits Rectangle {
     in property <float> high: 1;
     // As wide as the panel's inside: on a narrow window the panel is 550px and
     // the monitors must still be inside it.
-    property <length> box-width: min(660px, min(root.width >= 1360px ? 750px : 550px, root.covered) - 52px);
+    property <length> box-width: max(100px, min(660px, min(root.width >= 1360px ? 750px : 550px, root.covered) - 52px));
     property <length> box-height: 200px;
     property <float> scale: min(box-width / 1px / max(1, wide), box-height / 1px / max(1, high));
-    // The card of the selected wallpaper stays in view at the right.
-    property <length> covered: self.width - 338px;
+    // The card of the selected wallpaper stays in view at the right: the panel
+    // covers what is left of it, wherever the window's width put it.
+    in property <length> covered: self.width - 338px;
 
     // What is behind: blurred, half covered in the window's grey.
     Rectangle {

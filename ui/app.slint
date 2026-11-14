@@ -1314,7 +1314,7 @@ export component AppWindow inherits Window {
             }
 
             // ---------------------------------------------------- the wallpaper's card
-            Rectangle {
+            card-column := Rectangle {
                 width: root.card-width;
                 if !root.has-selection: Text {
                     y: 100px;
@@ -1701,6 +1701,7 @@ export component AppWindow inherits Window {
         cleared(i) => { root.monitor-cleared(i); }
         on-start-changed(on) => { root.monitors-on-start-changed(on); }
         backdrop: root.backdrop;
+        covered: card-column.absolute-position.x - self.absolute-position.x;
         profiles(save) => { root.monitor-profiles(save); }
     }
 
