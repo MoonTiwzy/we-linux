@@ -248,7 +248,8 @@ export component AppWindow inherits Window {
     callback group-shown(int);
     callback filters-reset();
     callback page-clicked(int);
-    callback item-selected(int);
+    /// A tile clicked, with Ctrl or Shift held or not.
+    callback item-selected(int, bool, bool);
     callback item-activated(int);
     callback subscribe();
     callback vote(bool);
@@ -257,6 +258,16 @@ export component AppWindow inherits Window {
     /// The small window's arrows: the wallpaper before (-1) or after (1).
     callback navigate(int);
     callback unsubscribe();
+    callback delete-pressed();
+    /// A rectangle let go of over the grid: where (x, y, width, height), how
+    /// the tiles lie (columns, step across, step down, side) and the keys held.
+    callback band-picked(float, float, float, float, int, float, float, float, bool, bool);
+    /// --show band: a rectangle drawn over the grid, as one being dragged.
+    in property <bool> debug-band;
+    callback select-all();
+    /// The question before unsubscribing (dialog 14), and its answer.
+    in property <styled-text> unsubscribe-question;
+    callback unsubscribe-answered(bool);
     callback apply();
     callback favorite();
     callback open-steam();
@@ -324,7 +335,7 @@ export component AppWindow inherits Window {
 
     // The original's keys, while no field has them: the arrows move the
     // selection through the grid, F10 the small window, F11 maximises,
-    // Delete unsubscribes.
+    // Delete unsubscribes (after asking), Ctrl+A picks every wallpaper listed.
     keys := FocusScope {
         width: 0px;
         height: 0px;
@@ -357,8 +368,13 @@ export component AppWindow inherits Window {
                 root.navigate(root.grid-cols);
                 return EventResult.accept;
             }
-            if (event.text == Key.Delete && root.sel-workshop && (root.sel-subscribed || root.sel-installed)) {
-                root.unsubscribe();
+            if (event.text == Key.Delete) {
+                root.delete-pressed();
+                return EventResult.accept;
+            }
+            // The letter whatever the layout: the original goes by the key, not the character.
+            if (event.modifiers.control && (event.text == "a" || event.text == "A" || event.text == "ф" || event.text == "Ф")) {
+                root.select-all();
                 return EventResult.accept;
             }
             return EventResult.reject;
@@ -828,9 +844,9 @@ export component AppWindow inherits Window {
                                             item: root.items[row.first + j];
                                             selected: row.first + j == root.selected;
                                             show-installed: true;
-                                            clicked => {
+                                            clicked(ctrl, shift) => {
                                                 keys.focus();
-                                                root.item-selected(row.first + j);
+                                                root.item-selected(row.first + j, ctrl, shift);
                                             }
                                             activated => { root.item-activated(row.first + j); }
                                         }
@@ -1110,6 +1126,49 @@ export component AppWindow inherits Window {
                                 property <int> last-cell: min(root.items.length, (self.first-row + self.rows-seen) * self.cols);
                                 changed first-cell => { root.visible-changed(self.first-cell, self.last-cell); }
                                 changed last-cell => { root.visible-changed(self.first-cell, self.last-cell); }
+                                // The installed tab's rectangle, as the original's: dragged from
+                                // between the tiles, it picks the ones it touches. A drag does not
+                                // pan the grid there, the rectangle has it.
+                                mouse-drag-pan: !root.installed-tab;
+                                band := TouchArea {
+                                    width: parent.width;
+                                    height: max(grid.content-height, grid.height);
+                                    enabled: root.installed-tab;
+                                    property <length> x0;
+                                    property <length> y0;
+                                    property <bool> ctrl;
+                                    property <bool> shift;
+                                    property <bool> dragging;
+                                    property <length> x1: clamp(self.mouse-x, 0, self.width);
+                                    property <length> y1: clamp(self.mouse-y, 0, self.height);
+                                    pointer-event(event) => {
+                                        if (event.button != PointerEventButton.left) {
+                                            return;
+                                        }
+                                        if (event.kind == PointerEventKind.down) {
+                                            keys.focus();
+                                            self.x0 = self.mouse-x;
+                                            self.y0 = self.mouse-y;
+                                            self.ctrl = event.modifiers.control;
+                                            self.shift = event.modifiers.shift;
+                                            self.dragging = false;
+                                        }
+                                        if (event.kind == PointerEventKind.up && self.dragging) {
+                                            self.dragging = false;
+                                            root.band-picked(
+                                                min(self.x0, self.x1) / 1px, min(self.y0, self.y1) / 1px,
+                                                abs(self.x1 - self.x0) / 1px, abs(self.y1 - self.y0) / 1px,
+                                                grid.cols, grid.step / 1px, (grid.side + root.tile-gap) / 1px, grid.side / 1px,
+                                                self.ctrl, self.shift);
+                                        }
+                                    }
+                                    moved => {
+                                        // It is a rectangle once it has moved a little: a click is not.
+                                        if (self.pressed && (abs(self.mouse-x - self.x0) > 4px || abs(self.mouse-y - self.y0) > 4px)) {
+                                            self.dragging = true;
+                                        }
+                                    }
+                                }
                                 for item[i] in root.items: Tile {
                                     x: 1px + mod(i, grid.cols) * grid.step;
                                     y: 1px + floor(i / grid.cols) * (grid.side + root.tile-gap);
@@ -1118,10 +1177,10 @@ export component AppWindow inherits Window {
                                     item: item;
                                     selected: i == root.selected;
                                     show-installed: !root.installed-tab;
-                                    clicked => {
+                                    clicked(ctrl, shift) => {
                                         // A click elsewhere takes the keys back from a field.
                                         keys.focus();
-                                        root.item-selected(i);
+                                        root.item-selected(i, ctrl, shift);
                                     }
                                     activated => { root.item-activated(i); }
                                     context(x, y) => {
@@ -1135,6 +1194,25 @@ export component AppWindow inherits Window {
                                 TouchArea {
                                     width: 0;
                                     height: 0;
+                                }
+                                // --show band: what that rectangle picks, once the grid is there.
+                                Timer {
+                                    interval: 3000ms;
+                                    running: root.debug-band && root.items.length > 0;
+                                    triggered => {
+                                        self.running = false;
+                                        root.band-picked(150, 90, 420, 260, grid.cols, grid.step / 1px,
+                                            (grid.side + root.tile-gap) / 1px, grid.side / 1px, false, false);
+                                    }
+                                }
+                                if band.dragging || root.debug-band: Rectangle {
+                                    x: root.debug-band ? 150px : min(band.x0, band.x1);
+                                    y: root.debug-band ? 90px : min(band.y0, band.y1);
+                                    width: root.debug-band ? 420px : abs(band.x1 - band.x0);
+                                    height: root.debug-band ? 260px : abs(band.y1 - band.y0);
+                                    background: #4183f54d;
+                                    border-width: 1px;
+                                    border-color: Theme.primary;
                                 }
                             }
                             // --show menu=3: the menu of the third tile, open with the window.
@@ -2095,6 +2173,36 @@ export component AppWindow inherits Window {
                 width: 95px;
                 text: L.t("Cancel", "Отмена");
                 clicked => { root.dialog = 0; }
+            }
+        }
+        Rectangle { height: 16px; }
+    }
+
+    // The original's question before unsubscribing: what goes, the presets
+    // that go with it, OK and Cancel.
+    if root.dialog == 14: Dialog {
+        title: L.t("Unsubscribe", "Отписаться");
+        panel-width: 600px;
+        closed => { root.unsubscribe-answered(false); }
+        StyledText {
+            text: root.unsubscribe-question;
+            default-color: Theme.text;
+            default-font-size: Theme.size;
+        }
+        Rectangle { height: 16px; }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 5px;
+            Btn {
+                width: 95px;
+                kind: 1;
+                text: L.t("OK", "ОК");
+                clicked => { root.unsubscribe-answered(true); }
+            }
+            Btn {
+                width: 95px;
+                text: L.t("Cancel", "Отмена");
+                clicked => { root.unsubscribe-answered(false); }
             }
         }
         Rectangle { height: 16px; }

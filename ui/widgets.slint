@@ -338,10 +338,13 @@ export component Scroll inherits Rectangle {
     in-out property <length> offset <=> flick.content-y;
     out property <length> visible-width: self.width - 10px;
     out property <bool> scrolls: root.content-height > root.height;
+    /// Dragging with the mouse pans the content (a wheel always does).
+    in property <bool> mouse-drag-pan: true;
     clip: true;
     flick := Flickable {
         x: 0;
         width: root.width;
+        mouse-drag-pan-enabled: root.mouse-drag-pan;
         content-width: root.width;
         content-height: max(root.content-height, root.height);
         @children

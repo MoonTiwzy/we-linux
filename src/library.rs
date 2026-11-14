@@ -20,6 +20,8 @@ pub struct Installed {
     pub rating: String,
     /// Seconds since the epoch.
     pub modified: u64,
+    /// A preset: the wallpaper it is a preset of, which it cannot be had without.
+    pub dependency: Option<u64>,
 }
 
 fn home() -> PathBuf {
@@ -97,6 +99,7 @@ fn read_item(dir: &Path) -> Option<Installed> {
             .is_some_and(|p| p.keys().any(|k| k != "schemecolor")),
         rating: Some(string("contentrating")).filter(|r| !r.is_empty()).unwrap_or_else(|| "Everyone".into()),
         modified,
+        dependency: json["dependency"].as_str().and_then(|id| id.parse().ok()),
     })
 }
 

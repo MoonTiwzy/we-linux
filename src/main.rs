@@ -17,6 +17,7 @@ mod lang;
 mod library;
 mod previews;
 mod props;
+mod selection;
 mod steam;
 
 use std::cell::RefCell;
@@ -389,8 +390,16 @@ struct App {
     previews: Previews,
     tab: i32,
     cards: Vec<Card>,
+    /// The installed tab: every card the filters leave, sorted, before it is
+    /// cut into pages (what Shift and Ctrl+A go through, as the original's do).
+    listed: Vec<Card>,
     model: Rc<VecModel<Item>>,
     selected: Option<usize>,
+    /// Picked besides the selection with Ctrl or Shift, by id.
+    picked: Vec<u64>,
+    /// Asked whether to unsubscribe (dialog 14): what goes, presets with it,
+    /// and what was asked about.
+    unsubscribing: Option<(Vec<u64>, Vec<u64>)>,
     installed: Vec<library::Installed>,
     /// Unsubscribed from in this run: not shown as installed even while
     /// Steam still lists it.
@@ -918,6 +927,9 @@ impl App {
     }
 
     fn show_tab(&mut self) {
+        // Another list: what was picked in this one is not.
+        self.picked.clear();
+        self.listed.clear();
         if let Some(ui) = self.ui() {
             ui.set_tab(self.tab);
             let sorts: Vec<SharedString> = if self.online() {
@@ -1123,6 +1135,7 @@ impl App {
             cards.reverse();
         }
         self.total = shown as u32;
+        self.listed = cards.clone();
         // A hundred a page, the pages under the grid.
         let per_page = self.per_page.max(1);
         let pages = shown.div_ceil(per_page).max(1) as u32;
@@ -1301,6 +1314,7 @@ impl App {
             subscribed: self.online() && state & steam::SUBSCRIBED != 0,
             favorite: self.favorites.contains(&card.id),
             progress: self.progress.get(&card.id).copied().unwrap_or(-1.0),
+            picked: self.picked.contains(&card.id),
         }
     }
 
@@ -1531,10 +1545,12 @@ impl App {
             if item.subscribed != fresh.subscribed
                 || item.progress != fresh.progress
                 || item.favorite != fresh.favorite
+                || item.picked != fresh.picked
             {
                 item.subscribed = fresh.subscribed;
                 item.progress = fresh.progress;
                 item.favorite = fresh.favorite;
+                item.picked = fresh.picked;
                 self.model.set_row_data(row, item);
             }
         }
@@ -1676,6 +1692,11 @@ impl App {
 
     fn select(&mut self, index: usize) {
         if index < self.cards.len() {
+            // Another selection empties what was picked (the same one again does not).
+            if self.selected != Some(index) && !self.picked.is_empty() {
+                self.picked.clear();
+                self.refresh_marks();
+            }
             self.selected = Some(index);
             self.show_selection(false);
             self.show_presets();
@@ -1851,8 +1872,9 @@ impl App {
         }
         self.installed.retain(|i| i.id != id);
         self.favorites.remove(&id);
+        self.picked.retain(|p| *p != id);
         if self.tab == INSTALLED {
-            self.selected = None;
+            // The selection stays where it is not what went (the cards keep it by id).
             self.show_installed();
             self.show_selection(true);
         } else {
@@ -1866,17 +1888,241 @@ impl App {
         self.show_monitors();
     }
 
+    /// The details' button: the selected wallpaper alone, after asking.
     fn unsubscribe(&mut self) {
-        let Some(card) = self.selected_card() else {
+        if let Some(card) = self.selected_card() {
+            self.ask_unsubscribe(vec![card.id]);
+        }
+    }
+
+    /// Unsubscribe from `ids` and the presets that depend on them, after
+    /// asking (the original's `Ye`; every caller of it here asks first).
+    fn ask_unsubscribe(&mut self, ids: Vec<u64>) {
+        let ids: Vec<u64> = ids.into_iter().filter(|id| *id != 0).collect();
+        if ids.is_empty() {
+            return;
+        }
+        if !self.steam_ok {
+            self.status(t(
+                "Steam connection could not be initialized: start Steam and try again",
+                "Соединение Steam не может быть инициализировано: запусти Steam и попробуй ещё раз",
+            ));
+            return;
+        }
+        self.ask(ids);
+    }
+
+    /// `ids` and the installed presets of them.
+    fn with_presets(&self, ids: &[u64]) -> Vec<u64> {
+        let installed: Vec<(u64, Option<u64>)> =
+            self.installed.iter().map(|i| (i.id, i.dependency)).collect();
+        let mut going = ids.to_vec();
+        going.extend(selection::presets_of(ids, &installed));
+        going
+    }
+
+    /// An item's title, wherever it is listed.
+    fn title_of(&self, id: u64) -> String {
+        self.cards
+            .iter()
+            .chain(&self.listed)
+            .find(|c| c.id == id)
+            .map(|c| c.title.clone())
+            .or_else(|| self.installed.iter().find(|i| i.id == id).map(|i| i.title.clone()))
+            .unwrap_or_else(|| id.to_string())
+    }
+
+    /// Put the question of dialog 14: what goes and the presets that go with it.
+    fn ask(&mut self, ids: Vec<u64>) {
+        let Some(ui) = self.ui() else { return };
+        let going = self.with_presets(&ids);
+        let titles: Vec<String> = ids.iter().map(|id| self.title_of(*id)).collect();
+        let presets: Vec<String> = going[ids.len()..].iter().map(|id| self.title_of(*id)).collect();
+        let question = selection::question(&titles, &presets, lang::russian());
+        ui.set_unsubscribe_question(
+            slint::StyledText::from_markdown(&question)
+                .unwrap_or_else(|_| slint::StyledText::from_plain_text(&question.replace("**", ""))),
+        );
+        self.unsubscribing = Some((going, ids));
+        ui.set_dialog(14);
+    }
+
+    /// The answer to dialog 14.
+    fn unsubscribe_answered(&mut self, ok: bool) {
+        if let Some(ui) = self.ui() {
+            ui.set_dialog(0);
+        }
+        if let Some((going, asked)) = self.unsubscribing.take()
+            && ok
+        {
+            self.unsubscribe_now(going, &asked);
+        }
+    }
+
+    /// Steam is told to drop `going`; `asked` is what the user chose of it.
+    /// Each item leaves the disk and the lists when Steam says it is done
+    /// (`forget`); the selection goes now if it was among them.
+    fn unsubscribe_now(&mut self, going: Vec<u64>, asked: &[u64]) {
+        let mut sent = Vec::new();
+        for &id in &going {
+            if self.busy.insert(id) {
+                let _ = self.steam.send(Command::Unsubscribe(id));
+                if self.set_when_ready == Some(id) {
+                    self.set_when_ready = None;
+                }
+                sent.push(id);
+            }
+        }
+        match sent.as_slice() {
+            [] => return,
+            [one] => {
+                let title = self.title_of(*one);
+                self.status(tf!("Unsubscribing from \"{}\"…", "Отписка от «{}»…", title));
+            }
+            many => {
+                self.status(tf!("Unsubscribing from {} wallpapers…", "Отписка от обоев: {}…", many.len()))
+            }
+        }
+        // As the original: on the installed tab the selection is let go of, and
+        // the small window moves on to the next wallpaper instead.
+        if let Some(current) = self.selected_card().map(|c| c.id)
+            && asked.contains(&current)
+            && self.tab == INSTALLED
+        {
+            let page: Vec<u64> = self.cards.iter().map(|c| c.id).collect();
+            let mini = self.ui().is_some_and(|ui| ui.get_mini());
+            let next = selection::after_removal(&page, current, &going)
+                .filter(|_| mini)
+                .and_then(|id| page.iter().position(|p| *p == id));
+            match next {
+                Some(index) => self.select(index),
+                None => {
+                    self.selected = None;
+                    self.show_selection(false);
+                    self.show_presets();
+                }
+            }
+        }
+        self.refresh_marks();
+    }
+
+    // ------------------------------------------------------------- picking several
+
+    /// What the original's `We()` is: every item shown, in order, all pages of
+    /// the installed tab.
+    fn shown_ids(&self) -> Vec<u64> {
+        let list = if self.tab == INSTALLED { &self.listed } else { &self.cards };
+        list.iter().map(|c| c.id).collect()
+    }
+
+    fn status_of(&self, id: u64) -> selection::Status {
+        let card = self.cards.iter().chain(&self.listed).find(|c| c.id == id);
+        if card.is_some_and(|c| self.dir_of(c).is_some()) {
+            selection::Status::Installed
+        } else if self.subscribed.get(&id).copied().unwrap_or(0) & steam::SUBSCRIBED != 0 {
+            selection::Status::Pending
+        } else {
+            selection::Status::Downloadable
+        }
+    }
+
+    /// What an action started on `target` (a tile's menu) or on nothing (a
+    /// key, a button of the details) is for: the original's `z`.
+    fn set_for(&self, target: Option<u64>, takes: selection::Takes) -> Vec<u64> {
+        let current = self.selected_card().map(|c| c.id);
+        selection::set_of(&self.picked, current, target, &self.shown_ids(), |id| self.status_of(id), takes)
+    }
+
+    /// A left click on a tile: with Ctrl it is picked or put back, with Shift
+    /// the run up to it is picked, otherwise it is selected (and set).
+    fn click(&mut self, index: usize, ctrl: bool, shift: bool) {
+        let Some(id) = self.cards.get(index).map(|c| c.id) else {
             return;
         };
-        if self.busy.insert(card.id) {
-            self.status(tf!("Unsubscribing from \"{}\"…", "Отписка от «{}»…", card.title));
-            let _ = self.steam.send(Command::Unsubscribe(card.id));
-            if self.set_when_ready == Some(card.id) {
-                self.set_when_ready = None;
+        let current = self.selected_card().map(|c| c.id);
+        if ctrl {
+            let after = selection::toggle(&mut self.picked, current, id);
+            if after != current {
+                self.selected = None;
+                self.show_selection(false);
+                self.show_presets();
             }
-            self.show_selection(true);
+        } else if shift {
+            let shown = self.shown_ids();
+            selection::extend(&mut self.picked, current, id, &shown);
+        } else {
+            self.select(index);
+            return;
+        }
+        self.refresh_marks();
+    }
+
+    /// A rectangle let go of over the grid's `tiles` (the original's
+    /// `callbackWallpaperSelectionRectangle`).
+    fn band(&mut self, tiles: &[usize], ctrl: bool, shift: bool) {
+        let ids: Vec<u64> = tiles.iter().filter_map(|i| self.cards.get(*i)).map(|c| c.id).collect();
+        let current = self.selected_card().map(|c| c.id);
+        let after = selection::band(&mut self.picked, current, &ids, ctrl, shift);
+        if after != current {
+            self.selected = None;
+            self.show_selection(false);
+            self.show_presets();
+        }
+        self.refresh_marks();
+    }
+
+    /// Ctrl+A: every wallpaper of the installed list (all pages), the page of
+    /// the workshop, the row of "Рекомендации" the selection is in.
+    fn select_all(&mut self) {
+        let ids: Vec<u64> = if self.tab == RECOMMENDED {
+            let Some(at) = self.selected else { return };
+            let mut first = 0;
+            let mut row = Vec::new();
+            for (_, cards) in &self.explore {
+                if (first..first + cards.len()).contains(&at) {
+                    row = cards.iter().map(|c| c.id).collect();
+                    break;
+                }
+                first += cards.len();
+            }
+            row
+        } else {
+            self.shown_ids()
+        };
+        selection::add_all(&mut self.picked, &ids);
+        self.refresh_marks();
+    }
+
+    /// Delete: unsubscribe from the selection and what is picked, after asking.
+    fn delete_pressed(&mut self) {
+        let set = self.set_for(None, selection::Takes::Subscribed);
+        self.ask_unsubscribe(set);
+    }
+
+    /// Into the playlist, or out of it: the wallpapers an action on `target` is for.
+    fn playlist_put(&mut self, target: Option<u64>, add: bool) {
+        let dirs: Vec<PathBuf> = self
+            .set_for(target, selection::Takes::Subscribed)
+            .into_iter()
+            .filter_map(|id| self.cards.iter().chain(&self.listed).find(|c| c.id == id).cloned())
+            .filter_map(|card| self.dir_of(&card))
+            .collect();
+        let before = self.playlist.items.len();
+        if add {
+            for dir in dirs {
+                if !self.playlist.items.contains(&dir) {
+                    self.playlist.items.push(dir);
+                }
+            }
+        } else {
+            self.playlist.items.retain(|p| !dirs.contains(p));
+            if self.playlist.items.is_empty() {
+                self.playlist.running = false;
+            }
+        }
+        if self.playlist.items.len() != before {
+            self.playlist.save();
+            self.show_playlist();
         }
     }
 
@@ -2155,42 +2401,39 @@ impl App {
         ])));
     }
 
-    /// A line of a tile's menu was picked.
+    /// A line of a tile's menu was picked. With wallpapers picked besides, the
+    /// playlist, the subscription and the favourites are for all of them (the
+    /// original's `z`); the rest is about the tile.
     fn context_activated(&mut self, id: &str) {
+        use selection::{Status, Takes};
         let Some(card) = self.context.and_then(|i| self.cards.get(i)).cloned() else {
             return;
         };
         let dir = self.dir_of(&card);
         match id {
-            "playlist-add" => {
-                if let Some(dir) = dir
-                    && !self.playlist.items.contains(&dir)
-                {
-                    self.playlist.items.push(dir);
-                    self.playlist.save();
-                    self.show_playlist();
+            "playlist-add" | "playlist-remove" => self.playlist_put(Some(card.id), id == "playlist-add"),
+            "subscribe" => {
+                for id in self.set_for(Some(card.id), Takes::Only(Status::Downloadable)) {
+                    if self.busy.insert(id) {
+                        let _ = self.steam.send(Command::Subscribe(id));
+                    }
                 }
+                self.refresh_marks();
             }
-            "playlist-remove" => {
-                if let Some(row) = dir.and_then(|d| self.playlist.items.iter().position(|p| *p == d)) {
-                    self.playlist_remove(row);
-                }
-            }
-            "subscribe" | "unsubscribe" => {
-                if self.busy.insert(card.id) {
-                    let _ = self.steam.send(if id == "subscribe" {
-                        Command::Subscribe(card.id)
-                    } else {
-                        Command::Unsubscribe(card.id)
-                    });
-                    self.refresh_marks();
-                }
+            "unsubscribe" => {
+                let set = self.set_for(Some(card.id), Takes::Subscribed);
+                self.ask_unsubscribe(set);
             }
             "favorite" | "unfavorite" => {
-                if id == "favorite" {
-                    self.favorites.insert(card.id);
-                } else {
-                    self.favorites.remove(&card.id);
+                // All of them as the tile is not: the original's heart is the workshop's favourite.
+                let on = id == "favorite";
+                for id in self.set_for(Some(card.id), Takes::Any) {
+                    if on {
+                        self.favorites.insert(id);
+                    } else {
+                        self.favorites.remove(&id);
+                    }
+                    let _ = self.steam.send(Command::Favorite { id, on });
                 }
                 self.save();
                 self.refresh_marks();
@@ -2631,6 +2874,11 @@ impl App {
         let Some(dir) = self.dir_of(&card) else {
             return;
         };
+        // With others picked they go in with it, as from a tile's menu.
+        if !self.picked.is_empty() {
+            self.playlist_put(None, true);
+            return;
+        }
         if self.playlist.items.contains(&dir) {
             self.status(t("This wallpaper is in the playlist already", "Эти обои уже в плейлисте"));
             return;
@@ -3138,8 +3386,11 @@ fn main() -> Result<(), slint::PlatformError> {
         previews: Previews::new(|picture| on_ui(move |app| app.picture_arrived(picture))),
         tab: WORKSHOP,
         cards: Vec::new(),
+        listed: Vec::new(),
         model,
         selected: None,
+        picked: Vec::new(),
+        unsubscribing: None,
         installed: library::installed(),
         gone: HashSet::new(),
         subscribed: HashMap::new(),
@@ -3260,14 +3511,35 @@ fn main() -> Result<(), slint::PlatformError> {
             ui.set_mini(true);
         }
         // A selection waits for the grid (the workshop answers later); it is
-        // shown without going on the desktop.
-        if let Some(index) = number("select") {
+        // shown without going on the desktop. `pick=2.5.6` picks those tiles
+        // besides, as Ctrl would; `ask` puts the question Delete would, for
+        // the selection and the picked ones (only OK, which nothing presses
+        // here, would unsubscribe).
+        let select = number("select");
+        let picks: Vec<usize> = state
+            .get("pick")
+            .map(|list| list.split('.').filter_map(|n| n.parse().ok()).collect())
+            .unwrap_or_default();
+        let ask = state.contains_key("ask");
+        if state.contains_key("band") {
+            ui.set_debug_band(true);
+        }
+        if select.is_some() || !picks.is_empty() || ask {
             pending_select.start(TimerMode::SingleShot, std::time::Duration::from_millis(2500), move || {
                 let mut app = handle.borrow_mut();
-                if (index as usize) < app.cards.len() {
-                    app.selected = Some(index as usize);
+                if let Some(index) = select.map(|i| i as usize).filter(|i| *i < app.cards.len()) {
+                    app.selected = Some(index);
                     app.show_selection(false);
                     app.show_presets();
+                }
+                let ids: Vec<u64> = picks.iter().filter_map(|i| app.cards.get(*i)).map(|c| c.id).collect();
+                selection::add_all(&mut app.picked, &ids);
+                app.refresh_marks();
+                if ask {
+                    let set = app.set_for(None, selection::Takes::Subscribed);
+                    if !set.is_empty() {
+                        app.ask(set);
+                    }
                 }
             });
         }
@@ -3467,7 +3739,15 @@ fn main() -> Result<(), slint::PlatformError> {
         app.selected = None;
         app.reload();
     });
-    on!(on_item_selected, |app, index| app.select(index.max(0) as usize));
+    on!(on_item_selected, |app, index, ctrl, shift| app.click(index.max(0) as usize, ctrl, shift));
+    on!(on_delete_pressed, |app| app.delete_pressed());
+    on!(on_band_picked, |app, x, y, width, height, cols, step, row_step, side, ctrl, shift| {
+        let grid = selection::Grid { cols: cols.max(1) as usize, step, row_step, side };
+        let tiles = selection::in_band(&grid, app.cards.len(), (x, y, width, height));
+        app.band(&tiles, ctrl, shift);
+    });
+    on!(on_select_all, |app| app.select_all());
+    on!(on_unsubscribe_answered, |app, ok| app.unsubscribe_answered(ok));
     on!(on_item_activated, |app, index| app.activate(index.max(0) as usize));
     on!(on_subscribe, |app| app.subscribe());
     on!(on_unsubscribe, |app| app.unsubscribe());
@@ -3629,7 +3909,9 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     on!(on_open_file, |app, kind| app.open_file(kind == "static"));
     on!(on_playlist_toggle_selected, |app| {
-        if let Some(row) = app
+        if !app.picked.is_empty() {
+            app.playlist_put(None, false);
+        } else if let Some(row) = app
             .selected_card()
             .and_then(|card| app.dir_of(&card))
             .and_then(|dir| app.playlist.items.iter().position(|p| *p == dir))

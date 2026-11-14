@@ -14,6 +14,8 @@ export struct Item {
     favorite: bool,
     /// 0..1 while it downloads, -1 otherwise.
     progress: float,
+    /// One of several picked with Ctrl or Shift: framed as the selected one is.
+    picked: bool,
 }
 
 export struct PageButton {
@@ -48,7 +50,8 @@ export component Tile inherits Rectangle {
     in property <bool> selected;
     // The save mark shows only where not everything is installed anyway.
     in property <bool> show-installed;
-    callback clicked;
+    /// A left click, with Ctrl or Shift held or not.
+    callback clicked(bool, bool);
     callback activated;
     /// The right button, where it was pressed.
     callback context(length, length);
@@ -147,13 +150,20 @@ export component Tile inherits Rectangle {
         }
     }
     Rectangle {
-        border-width: root.selected ? 3px : ta.has-hover ? 1px : 0;
-        border-color: root.selected ? Theme.primary : #71a3f8cc;
+        border-width: root.selected || root.item.picked ? 3px : ta.has-hover ? 1px : 0;
+        border-color: root.selected || root.item.picked ? Theme.primary : #71a3f8cc;
     }
     ta := TouchArea {
-        clicked => { root.clicked(); }
+        // The keys held when the button went down: `clicked` does not tell them.
+        property <bool> ctrl;
+        property <bool> shift;
+        clicked => { root.clicked(self.ctrl, self.shift); }
         double-clicked => { root.activated(); }
         pointer-event(event) => {
+            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                self.ctrl = event.modifiers.control;
+                self.shift = event.modifiers.shift;
+            }
             if (event.kind == PointerEventKind.down && event.button == PointerEventButton.right) {
                 root.context(self.mouse-x, self.mouse-y);
             }
