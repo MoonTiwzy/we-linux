@@ -4873,7 +4873,7 @@ dependencies = [
 
 [[package]]
 name = "we-linux"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "image",
  "serde",
@@ -4885,7 +4885,7 @@ dependencies = [
 
 [[package]]
 name = "we-linux-ui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "slint",
  "slint-build",
