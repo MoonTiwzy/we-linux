@@ -100,6 +100,24 @@ fn read_item(dir: &Path) -> Option<Installed> {
     })
 }
 
+/// Take a workshop item off the disk. Steam does that itself after an
+/// unsubscribe, but only when it gets round to it (often at its next start),
+/// and until then the wallpaper would still stand among the installed ones.
+/// Only a folder that is a workshop item of this app is touched.
+pub fn remove(dir: &Path) -> Result<(), String> {
+    let content = format!("steamapps/workshop/content/{}", crate::steam::APP);
+    let is_item = dir.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.parse::<u64>().is_ok())
+        && dir.parent().is_some_and(|parent| parent.ends_with(&content));
+    if !is_item {
+        return Err(format!("{} is not a workshop item", dir.display()));
+    }
+    match std::fs::remove_dir_all(dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("{}: {e}", dir.display())),
+    }
+}
+
 pub fn installed() -> Vec<Installed> {
     let mut out = Vec::new();
     for library in libraries() {
@@ -111,4 +129,27 @@ pub fn installed() -> Vec<Installed> {
         out.extend(dirs.flatten().filter_map(|d| read_item(&d.path())));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_workshop_item_is_removed_from_the_disk() {
+        let root = std::env::temp_dir().join(format!("we-linux-remove-{}", std::process::id()));
+        let item = root.join(format!("steamapps/workshop/content/{}/123456", crate::steam::APP));
+        std::fs::create_dir_all(item.join("materials")).unwrap();
+        std::fs::write(item.join("project.json"), "{}").unwrap();
+        // Not an item: the folder of all items, a folder beside them, a home.
+        assert!(remove(item.parent().unwrap()).is_err());
+        assert!(remove(&root.join("steamapps/workshop/content/1/123456")).is_err());
+        assert!(remove(&root).is_err());
+        assert!(item.is_dir());
+        assert!(remove(&item).is_ok());
+        assert!(!item.exists());
+        // Gone already is as good as removed.
+        assert!(remove(&item).is_ok());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

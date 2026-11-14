@@ -392,6 +392,9 @@ struct App {
     model: Rc<VecModel<Item>>,
     selected: Option<usize>,
     installed: Vec<library::Installed>,
+    /// Unsubscribed from in this run: not shown as installed even while
+    /// Steam still lists it.
+    gone: HashSet<u64>,
     /// `EItemState` by id, as Steam last told.
     subscribed: HashMap<u64, u32>,
     progress: HashMap<u64, f32>,
@@ -773,8 +776,12 @@ impl App {
     }
 
     fn restore(&mut self) {
-        let Ok(bytes) = std::fs::read(config_file()) else { return };
-        let Ok(saved) = serde_json::from_slice::<Saved>(&bytes) else { return };
+        let Ok(bytes) = std::fs::read(config_file()) else {
+            return;
+        };
+        let Ok(saved) = serde_json::from_slice::<Saved>(&bytes) else {
+            return;
+        };
         self.tab = saved.tab.unwrap_or(WORKSHOP).clamp(INSTALLED, WORKSHOP);
         self.workshop_sort = saved.workshop_sort.unwrap_or(0).min(WORKSHOP_SORTS.len() - 1);
         self.local_sort = saved.local_sort.unwrap_or(0).min(LOCAL_SORTS.len() - 1);
@@ -1040,7 +1047,7 @@ impl App {
 
     fn show_installed(&mut self) {
         self.generation += 1;
-        self.installed = library::installed();
+        self.installed = self.on_disk();
         let all = self.installed.len();
         // As the original: an item goes when it carries a tag left unticked,
         // and stays only with every tag of "Показать только" ticked.
@@ -1374,7 +1381,9 @@ impl App {
         if picture.generation != self.picture_generation {
             return;
         }
-        let Some(row) = self.cards.iter().position(|c| c.id == picture.id) else { return };
+        let Some(row) = self.cards.iter().position(|c| c.id == picture.id) else {
+            return;
+        };
         // An animated preview of a cell in view plays, as the original's do.
         if !picture.frames.is_empty() {
             let (first, last) = self.visible;
@@ -1512,7 +1521,9 @@ impl App {
     /// Bring the marks of every cell (subscribed, on the desktop, progress) up to date.
     fn refresh_marks(&mut self) {
         for (row, card) in self.cards.iter().enumerate() {
-            let Some(mut item) = self.model.row_data(row) else { continue };
+            let Some(mut item) = self.model.row_data(row) else {
+                continue;
+            };
             let fresh = self.item_of(card);
             if item.subscribed != fresh.subscribed
                 || item.progress != fresh.progress
@@ -1756,7 +1767,9 @@ impl App {
     /// The user changed the property in row `row`: keep it, tell the engines
     /// that play this wallpaper (on every monitor or on one) and redraw.
     fn set_property(&mut self, row: usize, value: Value) {
-        let Some(card) = self.selected_card() else { return };
+        let Some(card) = self.selected_card() else {
+            return;
+        };
         let Some(property) = self.shown_properties.get(row).and_then(|&i| self.properties.get(i)).cloned()
         else {
             return;
@@ -1774,7 +1787,9 @@ impl App {
     }
 
     fn reset_properties(&mut self) {
-        let Some(card) = self.selected_card() else { return };
+        let Some(card) = self.selected_card() else {
+            return;
+        };
         if let Some(dir) = self.dir_of(&card) {
             for property in self.properties.iter().filter(|p| self.overrides.contains_key(&p.name)) {
                 props::tell_engines(&dir, &property.name, &property.default);
@@ -1789,7 +1804,9 @@ impl App {
     // ------------------------------------------------------------- actions
 
     fn subscribe(&mut self) {
-        let Some(card) = self.selected_card() else { return };
+        let Some(card) = self.selected_card() else {
+            return;
+        };
         if self.busy.insert(card.id) {
             self.status(tf!("Subscribing to \"{}\"…", "Подписка на «{}»…", card.title));
             let _ = self.steam.send(Command::Subscribe(card.id));
@@ -1798,8 +1815,58 @@ impl App {
         }
     }
 
+    /// What is on the disk, without what was unsubscribed from here: Steam
+    /// may still think of such an item as installed for a while.
+    fn on_disk(&self) -> Vec<library::Installed> {
+        library::installed().into_iter().filter(|item| !self.gone.contains(&item.id)).collect()
+    }
+
+    /// An item was unsubscribed from: off the desktop, off the disk and out
+    /// of what is shown, now and not when Steam gets round to it.
+    fn forget(&mut self, id: u64) {
+        self.gone.insert(id);
+        let dir = self.installed.iter().find(|i| i.id == id).map(|i| i.dir.clone());
+        let mut left_over = None;
+        if let Some(dir) = dir {
+            // A wallpaper that is on the desktop cannot stay there without its files.
+            if desktop::current().as_deref() == Some(dir.as_path()) {
+                let _ = desktop::off();
+                self.current = None;
+            }
+            for (output, shown) in desktop::outputs() {
+                if shown == dir {
+                    let _ = desktop::remove_from(&output);
+                }
+            }
+            left_over = library::remove(&dir).err();
+        }
+        match left_over {
+            None => self
+                .status(t("Unsubscribed and removed from the disk", "Подписка снята, обои удалены с диска")),
+            Some(why) => self
+                .status(tf!("Unsubscribed; the files stay: {why}", "Подписка снята; файлы остались: {why}")),
+        }
+        self.installed.retain(|i| i.id != id);
+        self.favorites.remove(&id);
+        if self.tab == INSTALLED {
+            self.selected = None;
+            self.show_installed();
+            self.show_selection(true);
+        } else {
+            for card in &mut self.cards {
+                if card.id == id {
+                    card.dir = None;
+                }
+            }
+            self.show_selection(true);
+        }
+        self.show_monitors();
+    }
+
     fn unsubscribe(&mut self) {
-        let Some(card) = self.selected_card() else { return };
+        let Some(card) = self.selected_card() else {
+            return;
+        };
         if self.busy.insert(card.id) {
             self.status(tf!("Unsubscribing from \"{}\"…", "Отписка от «{}»…", card.title));
             let _ = self.steam.send(Command::Unsubscribe(card.id));
@@ -1811,7 +1878,9 @@ impl App {
     }
 
     fn apply(&mut self) {
-        let Some(card) = self.selected_card() else { return };
+        let Some(card) = self.selected_card() else {
+            return;
+        };
         let Some(dir) = self.dir_of(&card) else {
             self.status(t("This wallpaper is not downloaded yet", "Эти обои ещё не скачаны"));
             return;
@@ -1837,7 +1906,9 @@ impl App {
 
     /// Say how far the wallpaper set last has come, until it is on the desktop.
     fn show_applying(&mut self) {
-        let Some((title, monitor, dir, since)) = self.applying.clone() else { return };
+        let Some((title, monitor, dir, since)) = self.applying.clone() else {
+            return;
+        };
         let waited = since.elapsed().as_secs();
         match engine::stage(&dir) {
             engine::Stage::Shown => {
@@ -1873,7 +1944,9 @@ impl App {
     fn activate(&mut self, index: usize) {
         // A wallpaper that is here was set by the click that selected it.
         self.select(index);
-        let Some(card) = self.selected_card() else { return };
+        let Some(card) = self.selected_card() else {
+            return;
+        };
         if self.dir_of(&card).is_some() {
         } else if self.subscribed.get(&card.id).copied().unwrap_or(0) & steam::SUBSCRIBED == 0 {
             self.subscribe();
@@ -1891,7 +1964,9 @@ impl App {
     }
 
     fn toggle_favorite(&mut self) {
-        let Some(card) = self.selected_card() else { return };
+        let Some(card) = self.selected_card() else {
+            return;
+        };
         let on = !self.favorites.remove(&card.id);
         if on {
             self.favorites.insert(card.id);
@@ -1909,7 +1984,9 @@ impl App {
     /// the workshop, the folder, the grid's view.
     fn context_menu(&mut self, index: usize) {
         let Some(ui) = self.ui() else { return };
-        let Some(card) = self.cards.get(index).cloned() else { return };
+        let Some(card) = self.cards.get(index).cloned() else {
+            return;
+        };
         self.context = Some(index);
         let icons = ui.global::<Icons>();
         let line = |label: &str, icon: Glyph, id: &str, enabled: bool| MenuEntry {
@@ -2077,7 +2154,9 @@ impl App {
 
     /// A line of a tile's menu was picked.
     fn context_activated(&mut self, id: &str) {
-        let Some(card) = self.context.and_then(|i| self.cards.get(i)).cloned() else { return };
+        let Some(card) = self.context.and_then(|i| self.cards.get(i)).cloned() else {
+            return;
+        };
         let dir = self.dir_of(&card);
         match id {
             "playlist-add" => {
@@ -2321,6 +2400,7 @@ impl App {
     fn show_settings(&self) {
         let Some(ui) = self.ui() else { return };
         let settings = Settings::load();
+        ui.set_cache_size(megabytes(engine::cache_size()).into());
         let multi = desktop::monitors().len() > 1;
         let index = |row: Row, value: &str| {
             playback_choices(row, multi).iter().position(|c| *c == value).unwrap_or(0) as i32
@@ -2391,6 +2471,12 @@ impl App {
     }
 
     /// "Сбросить": every setting as it comes.
+    fn clear_cache(&mut self) {
+        let freed = engine::clear_cache();
+        self.status(tf!("Cache cleared: {} freed", "Кэш очищен: освобождено {}", megabytes(freed)));
+        self.show_settings();
+    }
+
     fn reset_settings(&mut self) {
         let fresh = Settings { hook: Settings::load().hook, ..Settings::default() };
         let result = fresh.save().and_then(|()| engine::ensure_daemon());
@@ -2414,16 +2500,24 @@ impl App {
     }
 
     fn preset_save(&mut self, name: &str) {
-        let Some(card) = self.selected_card() else { return };
+        let Some(card) = self.selected_card() else {
+            return;
+        };
         let result = props::save_preset(card.id, name, &self.overrides);
         self.report(result, &tf!("Preset \"{}\" saved", "Пресет «{}» сохранён", name.trim()));
         self.show_presets();
     }
 
     fn preset_load(&mut self, row: usize) {
-        let Some(card) = self.selected_card() else { return };
-        let Some(name) = props::presets(card.id).into_iter().nth(row) else { return };
-        let Some(values) = props::preset(card.id, &name) else { return };
+        let Some(card) = self.selected_card() else {
+            return;
+        };
+        let Some(name) = props::presets(card.id).into_iter().nth(row) else {
+            return;
+        };
+        let Some(values) = props::preset(card.id, &name) else {
+            return;
+        };
         // The renderer is told every property that is another value now.
         if let Some(dir) = self.dir_of(&card) {
             for property in &self.properties {
@@ -2443,7 +2537,9 @@ impl App {
     /// Give every other installed wallpaper the values set here, for the
     /// properties it has by the same name and of the same kind.
     fn preset_apply_all(&mut self) {
-        let Some(card) = self.selected_card() else { return };
+        let Some(card) = self.selected_card() else {
+            return;
+        };
         let mut changed = 0;
         for item in self.installed.iter().filter(|item| item.id != card.id) {
             let theirs = props::load(&item.dir);
@@ -2526,8 +2622,12 @@ impl App {
     }
 
     fn playlist_add(&mut self) {
-        let Some(card) = self.selected_card() else { return };
-        let Some(dir) = self.dir_of(&card) else { return };
+        let Some(card) = self.selected_card() else {
+            return;
+        };
+        let Some(dir) = self.dir_of(&card) else {
+            return;
+        };
         if self.playlist.items.contains(&dir) {
             self.status(t("This wallpaper is in the playlist already", "Эти обои уже в плейлисте"));
             return;
@@ -2662,10 +2762,7 @@ impl App {
                 }
                 if ok {
                     self.subscribed.remove(&id);
-                    self.status(t(
-                        "Unsubscribed, Steam will remove the wallpaper from the disk",
-                        "Подписка снята, Steam уберёт обои с диска",
-                    ));
+                    self.forget(id);
                 } else {
                     self.status(t("Steam did not remove the subscription", "Steam не снял подписку"));
                 }
@@ -2673,8 +2770,9 @@ impl App {
             }
             Reply::Subscriptions(list) => {
                 self.subscribed = list.into_iter().collect();
-                let on_disk = library::installed();
-                let changed = on_disk.len() != self.installed.len();
+                let on_disk = self.on_disk();
+                let ids = |list: &[library::Installed]| list.iter().map(|i| i.id).collect::<HashSet<u64>>();
+                let changed = ids(&on_disk) != ids(&self.installed);
                 self.installed = on_disk;
                 if self.tab == INSTALLED && changed {
                     self.show_installed();
@@ -2704,7 +2802,12 @@ impl App {
                     state & steam::INSTALLED != 0 && state & (steam::DOWNLOADING | steam::PENDING) == 0;
                 if finished {
                     self.progress.remove(&id);
+                    self.gone.remove(&id);
                     self.status(t("The wallpaper is downloaded", "Обои загружены"));
+                    // It is among the installed ones from now on.
+                    if self.tab == INSTALLED && !self.installed.iter().any(|i| i.id == id) {
+                        self.show_installed();
+                    }
                 } else if total > 0 {
                     self.progress.insert(id, done as f32 / total as f32);
                     self.status(tf!(
@@ -2756,12 +2859,14 @@ we-linux apply <ID|PATH> [--output NAME]
                                   monitor, or on one
 we-linux off                      no live wallpaper
 we-linux status                   what is on the desktop
+we-linux clear-cache              empty the caches: previews, stills, copies of
+                                  videos, compiled shaders
 we-linux doctor                   everything a bug report needs: versions, what
                                   was found, the settings, the engine's log
 we-linux workshop [TEXT] [--sort top|trend|new|subs|updated] [--type scene|video|web]
                   [--page N]      search the workshop: id, size, votes, title
 we-linux subscribe ID...          subscribe and wait for Steam to download
-we-linux unsubscribe ID...        unsubscribe (Steam removes the files)
+we-linux unsubscribe ID...        unsubscribe and remove the files
 we-linux daemon                   keep the wallpaper on the desktop: run it
                                   when the session starts (the window and
                                   `apply` start it when it is not running)";
@@ -2929,6 +3034,16 @@ fn command_line() -> Option<i32> {
                         "Steam refused"
                     }
                 );
+                if ok && !subscribing {
+                    for item in library::installed().into_iter().filter(|item| item.id == id) {
+                        if desktop::current().as_deref() == Some(item.dir.as_path()) {
+                            let _ = desktop::off();
+                        }
+                        if let Err(why) = library::remove(&item.dir) {
+                            eprintln!("we-linux: {why}");
+                        }
+                    }
+                }
             }
             if subscribing {
                 // Until Steam has them all (or ten minutes).
@@ -2949,6 +3064,10 @@ fn command_line() -> Option<i32> {
                     std::thread::sleep(std::time::Duration::from_millis(100));
                 }
             }
+            0
+        }
+        "clear-cache" => {
+            say!("{} freed", megabytes(engine::clear_cache()));
             0
         }
         "doctor" => {
@@ -3019,6 +3138,7 @@ fn main() -> Result<(), slint::PlatformError> {
         model,
         selected: None,
         installed: library::installed(),
+        gone: HashSet::new(),
         subscribed: HashMap::new(),
         progress: HashMap::new(),
         busy: HashSet::new(),
@@ -3495,6 +3615,7 @@ fn main() -> Result<(), slint::PlatformError> {
         ));
     });
     on!(on_settings_reset, |app| app.reset_settings());
+    on!(on_cache_clear, |app| app.clear_cache());
     on!(on_settings_save, |app| app.save_settings());
     on!(on_settings_shown, |app| app.show_settings());
     on!(on_language_picked, |app, index| {
@@ -3581,7 +3702,9 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let handle = app.clone();
         follow.start(TimerMode::Repeated, std::time::Duration::from_millis(700), move || {
-            let Ok(mut app) = handle.try_borrow_mut() else { return };
+            let Ok(mut app) = handle.try_borrow_mut() else {
+                return;
+            };
             app.show_applying();
             let current = desktop::current();
             if current != app.current {

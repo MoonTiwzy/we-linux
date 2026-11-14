@@ -170,7 +170,9 @@ fn data_dir() -> PathBuf {
 
 /// A 64-bit libsteam_api.so with the interface we call.
 fn usable(path: &Path) -> bool {
-    let Ok(bytes) = std::fs::read(path) else { return false };
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
     let needle = b"SteamAPI_SteamUGC_v021";
     bytes.len() > 5
         && bytes[..4] == *b"\x7fELF"
@@ -469,7 +471,9 @@ impl Steam {
 
     /// Who a Steam user is: asked for once, known after a moment (None until).
     pub fn persona(&self, id: u64) -> Option<Persona> {
-        let (Some(request), Some(name)) = (self.request_user, self.persona_name) else { return None };
+        let (Some(request), Some(name)) = (self.request_user, self.persona_name) else {
+            return None;
+        };
         if self.friends.is_null() || id == 0 {
             return None;
         }

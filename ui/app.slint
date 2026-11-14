@@ -289,6 +289,8 @@ export component AppWindow inherits Window {
     callback monitors-on-start-changed(bool);
     callback settings-save();
     callback settings-reset();
+    callback cache-clear();
+    in property <string> cache-size;
     /// The settings open: their boxes show what is in force.
     callback settings-shown();
     /// "Открыть обои": "animated" (a wallpaper folder or a video), "static" (a picture).
@@ -1719,6 +1721,8 @@ export component AppWindow inherits Window {
         }
         cancelled => { root.settings-open = false; }
         reset => { root.settings-reset(); }
+        clear-cache => { root.cache-clear(); }
+        cache-size: root.cache-size;
     }
 
     // ---------------------------------------------------------------- the small dialogs

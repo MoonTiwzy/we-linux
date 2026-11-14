@@ -114,6 +114,9 @@ export component SettingsView inherits Rectangle {
     callback accepted();
     callback cancelled();
     callback reset();
+    callback clear-cache();
+    /// How much the cache holds, as text: "312 MB".
+    in property <string> cache-size;
 
     property <string> not-here: L.t("Not available on Linux.", "На Linux этого нет.");
     property <string> not-drawn: L.t("The renderer does not draw 3D scenes, so this has nothing to change.", "Рендерер не рисует 3D-сцены, поэтому менять тут нечего.");
@@ -543,6 +546,17 @@ export component SettingsView inherits Rectangle {
                             font-size: 12.6px;
                             text: L.t("RESET", "СБРОСИТЬ");
                             clicked => { root.reset(); }
+                        }
+                    }
+                    Row {
+                        label: L.t("Clear cache", "Очистить кэш") + (root.cache-size != "" ? " (" + root.cache-size + "):" : ":");
+                        hint: L.t("Previews, stills, re-encoded videos and compiled shaders. All of it is made again when needed.", "Превью, стоп-кадры, перекодированные видео и собранные шейдеры. Всё это создаётся заново по мере надобности.");
+                        Btn {
+                            horizontal-stretch: 1;
+                            kind: 2;
+                            font-size: 12.6px;
+                            text: L.t("CLEAR", "ОЧИСТИТЬ");
+                            clicked => { root.clear-cache(); }
                         }
                     }
                 }

@@ -62,6 +62,61 @@ pub fn runtime_dir() -> PathBuf {
         .map_or_else(|| cache_dir().join("run"), |dir| PathBuf::from(dir).join("we-linux"))
 }
 
+/// How many bytes the files under `dir` take.
+fn size_of_dir(dir: &Path) -> u64 {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| match entry.file_type() {
+            Ok(kind) if kind.is_dir() => size_of_dir(&entry.path()),
+            Ok(kind) if kind.is_file() => entry.metadata().map_or(0, |m| m.len()),
+            _ => 0,
+        })
+        .sum()
+}
+
+/// What may be thrown away at any time: our previews, stills and stand-ins
+/// for videos, and the renderer's copies of videos and compiled shaders.
+fn caches() -> Vec<PathBuf> {
+    let renderer = cache_dir().parent().map(|parent| parent.join("wepaper"));
+    std::iter::once(cache_dir()).chain(renderer).collect()
+}
+
+/// How much the caches hold.
+pub fn cache_size() -> u64 {
+    caches().iter().map(|dir| size_of_dir(dir)).sum()
+}
+
+/// Empty the caches. The stand-in of a video that is on the desktop stays:
+/// it is what the renderer plays. Returns how many bytes went.
+pub fn clear_cache() -> u64 {
+    let before = cache_size();
+    let shown: Vec<PathBuf> = crate::desktop::current()
+        .into_iter()
+        .chain(crate::desktop::outputs().into_iter().map(|(_, dir)| dir))
+        .collect();
+    for dir in caches() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            // The runtime folder, when there is no XDG_RUNTIME_DIR, lives here.
+            if path.file_name().is_some_and(|name| name == "run") {
+                continue;
+            }
+            if path.file_name().is_some_and(|name| name == "local") {
+                for item in std::fs::read_dir(&path).into_iter().flatten().flatten() {
+                    if !shown.contains(&item.path()) {
+                        let _ = std::fs::remove_dir_all(item.path());
+                    }
+                }
+                continue;
+            }
+            let _ = if path.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
+        }
+    }
+    before.saturating_sub(cache_size())
+}
+
 pub fn cache_dir() -> PathBuf {
     std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
@@ -262,7 +317,9 @@ fn gone_within(socket: &Path, limit: Duration) -> bool {
 /// Whether nothing listens after.
 fn signal_out(socket: &Path, step: Duration) -> bool {
     for signal in [SIGTERM, SIGKILL] {
-        let Some(pid) = listener(socket) else { return !listening(socket) };
+        let Some(pid) = listener(socket) else {
+            return !listening(socket);
+        };
         unsafe {
             kill(pid, signal);
         }
@@ -308,7 +365,9 @@ pub fn running() -> bool {
 
 /// What the renderer shows: monitor and wallpaper folder.
 pub fn shown() -> Vec<(String, PathBuf)> {
-    let Ok(outputs) = call(json!({ "cmd": "get", "path": "outputs" })) else { return Vec::new() };
+    let Ok(outputs) = call(json!({ "cmd": "get", "path": "outputs" })) else {
+        return Vec::new();
+    };
     outputs
         .as_object()
         .into_iter()
@@ -322,7 +381,9 @@ pub fn shown() -> Vec<(String, PathBuf)> {
 /// The monitors the renderer draws on, with their size: what tells the
 /// monitors apart where the compositor does not (anything but Hyprland).
 pub fn outputs() -> Vec<(String, u32, u32)> {
-    let Ok(outputs) = call(json!({ "cmd": "get", "path": "outputs" })) else { return Vec::new() };
+    let Ok(outputs) = call(json!({ "cmd": "get", "path": "outputs" })) else {
+        return Vec::new();
+    };
     outputs
         .as_object()
         .into_iter()
@@ -351,6 +412,19 @@ pub fn tell_property(wallpaper: &Path, name: &str, value: &Value) {
                 let fill = crate::props::fill_of(&value).map_or(Value::Null, Value::from);
                 let _ =
                     call(json!({ "cmd": "set", "path": format!("outputs/{output}/fill"), "value": fill }));
+                continue;
+            }
+            // The built-in ones are the monitor's look. Switching the colour
+            // options changes what four of them mean: all are told again.
+            if crate::props::look_of(&name, &value, true).is_some() || name == "wec_e" {
+                // The value told may not be saved yet.
+                let mut values = properties_of(&wallpaper);
+                values.insert(name.clone(), value.clone());
+                for (key, value) in crate::props::look(&values) {
+                    let _ = call(
+                        json!({ "cmd": "set", "path": format!("outputs/{output}/look/{key}"), "value": value }),
+                    );
+                }
                 continue;
             }
             let path = format!("outputs/{output}/wallpaper/properties/{name}");
@@ -474,7 +548,9 @@ fn under(settings: &Settings, over: Over, sound: bool) -> Playback {
 /// Whether an application other than the renderer (`renderer`, its pid)
 /// plays sound now: a stream of the sound server that is not paused.
 fn others_play_sound(renderer: i32) -> bool {
-    let Some(text) = output("pactl", &["list", "sink-inputs"]) else { return false };
+    let Some(text) = output("pactl", &["list", "sink-inputs"]) else {
+        return false;
+    };
     text.split("Sink Input #").skip(1).any(|stream| {
         let playing = stream.lines().any(|l| l.trim() == "Corked: no");
         let pid = stream
@@ -678,7 +754,9 @@ pub fn forget_images() {
 
 /// Put back the pictures that were there before the live wallpaper.
 pub fn restore_images() {
-    let Ok(text) = std::fs::read_to_string(before_file()) else { return };
+    let Ok(text) = std::fs::read_to_string(before_file()) else {
+        return;
+    };
     forget_images();
     let images: Vec<(String, PathBuf)> = serde_json::from_str(&text).unwrap_or_default();
     for (monitor, image) in images.iter().filter(|(_, image)| image.is_file()) {
@@ -780,7 +858,9 @@ fn lock_file() -> Option<std::fs::File> {
 
 /// Start `we-linux daemon` on its own unless one runs already.
 pub fn ensure_daemon() -> Result<(), String> {
-    let Some(lock) = lock_file() else { return Err("no runtime directory".into()) };
+    let Some(lock) = lock_file() else {
+        return Err("no runtime directory".into());
+    };
     if lock.try_lock().is_err() {
         return Ok(());
     }
@@ -811,6 +891,14 @@ fn wanted(desktop: &Desktop, monitor: &str) -> Option<PathBuf> {
 fn properties(wallpaper: &Path) -> Value {
     let id = wallpaper.file_name().and_then(|n| n.to_str()).and_then(|n| n.parse::<u64>().ok());
     Value::Object(id.map(crate::props::overrides).unwrap_or_default().into_iter().collect())
+}
+
+/// The same as a map, for what reads single values of it.
+fn properties_of(wallpaper: &Path) -> serde_json::Map<String, Value> {
+    match properties(wallpaper) {
+        Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    }
 }
 
 /// The settings the renderer is told: a change of them is sent, nothing
@@ -1180,6 +1268,11 @@ pub fn run_daemon() {
                                 let _ = call(
                                     json!({ "cmd": "set", "path": format!("outputs/{monitor}/fill"), "value": fill }),
                                 );
+                                for (key, value) in crate::props::look(&properties_of(&wallpaper)) {
+                                    let _ = call(
+                                        json!({ "cmd": "set", "path": format!("outputs/{monitor}/look/{key}"), "value": value }),
+                                    );
+                                }
                             }
                             Err(_) if SILENT.get() => loading = Some(key),
                             Err(why) => {
@@ -1457,7 +1550,9 @@ mod tests {
     #[test]
     #[ignore]
     fn hanging_renderer() {
-        let Some(socket) = std::env::var_os(HANG_ON) else { return };
+        let Some(socket) = std::env::var_os(HANG_ON) else {
+            return;
+        };
         if std::env::var_os(DEAF).is_some() {
             extern "C" fn ignore(_: i32) {}
             unsafe {

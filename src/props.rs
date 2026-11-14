@@ -70,7 +70,8 @@ fn clean(label: &str) -> String {
 
 /// The properties Wallpaper Engine gives every video wallpaper of its own,
 /// before the wallpaper's: how it sits on the monitor, how fast and loud it
-/// plays, its colours. Of these the renderer does the fill (cover or stretch).
+/// plays, its colours. The renderer does the fill (cover, the whole picture
+/// or stretch), the mirror, the speed and the colours.
 fn video_properties() -> Vec<Property> {
     use crate::lang::t;
     let row = |name: &str, label: &str, kind: Kind, default: Value, min: f64, max: f64| Property {
@@ -100,31 +101,85 @@ fn video_properties() -> Vec<Property> {
         .collect(),
         usable: true,
         hint: String::new(),
-        usable_options: vec![true, false, true, true, false],
+        usable_options: vec![true, true, true, true, false],
         ..row("alignment", t("Alignment", "Выравнивание"), Kind::Combo, Value::from(0), 0.0, 4.0)
     };
     vec![
         alignment,
         row("alignmentposition", t("Position", "Позиция"), Kind::Slider, Value::from(50), 0.0, 100.0),
-        row("alignmentfliph", t("Flip", "Отразить"), Kind::Bool, Value::Bool(false), 0.0, 1.0),
-        row(
+        done(row("alignmentfliph", t("Flip", "Отразить"), Kind::Bool, Value::Bool(false), 0.0, 1.0)),
+        done(row(
             "rate",
             t("Playback rate", "Скорость воспроизведения"),
             Kind::Slider,
             Value::from(100),
             25.0,
             200.0,
-        ),
+        )),
         row("volume", t("Volume", "Громкость"), Kind::Slider, Value::from(50), 0.0, 100.0),
-        row(
-            "showcoloroptions",
+        done(row(
+            "wec_e",
             t("Show color options", "Показать настройки цвета"),
             Kind::Bool,
             Value::Bool(false),
             0.0,
             1.0,
-        ),
+        )),
+        colour(row("wec_brs", t("Brightness", "Яркость"), Kind::Slider, Value::from(50), 0.0, 100.0)),
+        colour(row("wec_con", t("Contrast", "Контраст"), Kind::Slider, Value::from(50), 0.0, 100.0)),
+        colour(row("wec_sa", t("Saturation", "Насыщенность"), Kind::Slider, Value::from(50), 0.0, 100.0)),
+        colour(row("wec_hue", t("Hue shift", "Оттенок"), Kind::Slider, Value::from(50), 0.0, 100.0)),
     ]
+}
+
+/// A built-in row the renderer does.
+fn done(row: Property) -> Property {
+    Property { usable: true, hint: String::new(), ..row }
+}
+
+/// A colour row: there while the colour options are shown.
+fn colour(row: Property) -> Property {
+    Property { condition: "wec_e.value".to_owned(), ..done(row) }
+}
+
+/// What a built-in property is to the renderer: the name of a value of the
+/// monitor's look and that value. The sliders of the original run from 0 to
+/// 100 with 50 in the middle; the look counts in times and degrees. Colours
+/// count only while the colour options are on, which `colours` says.
+pub fn look_of(name: &str, value: &Value, colours: bool) -> Option<(&'static str, Value)> {
+    let number = value.as_f64().or_else(|| value.as_str().and_then(|text| text.parse().ok()));
+    let around_one =
+        |key: &'static str| Some((key, if colours { Value::from(number? / 50.0) } else { Value::Null }));
+    match name {
+        "alignmentfliph" => Some(("flip", Value::Bool(value.as_bool().unwrap_or(false)))),
+        "rate" => Some(("rate", Value::from(number? / 100.0))),
+        "wec_brs" => around_one("brightness"),
+        "wec_con" => around_one("contrast"),
+        "wec_sa" => around_one("saturation"),
+        "wec_hue" => Some(("hue", if colours { Value::from((number? - 50.0) * 3.6) } else { Value::Null })),
+        _ => None,
+    }
+}
+
+/// The look a wallpaper's saved values ask for, value by value. Every value
+/// of the look the built-in properties reach is in it: one the user never
+/// set goes back to plain, so that the look of the wallpaper shown before
+/// does not stay.
+pub fn look(values: &serde_json::Map<String, Value>) -> Vec<(&'static str, Value)> {
+    let colours = values.get("wec_e").and_then(Value::as_bool).unwrap_or(false);
+    let mut look: Vec<(&'static str, Value)> =
+        ["flip", "rate", "brightness", "contrast", "saturation", "hue"]
+            .into_iter()
+            .map(|key| (key, Value::Null))
+            .collect();
+    for (name, value) in values {
+        if let Some((key, value)) = look_of(name, value, colours)
+            && let Some(slot) = look.iter_mut().find(|(known, _)| *known == key)
+        {
+            slot.1 = value;
+        }
+    }
+    look
 }
 
 /// What the renderer makes of a wallpaper's "alignment" (the original's
@@ -132,14 +187,20 @@ fn video_properties() -> Vec<Property> {
 pub fn fill_of(alignment: &Value) -> Option<&'static str> {
     match alignment.as_f64().map(|n| n as i64) {
         Some(0 | 2) => Some("cover"),
+        // The whole picture, not enlarged past the monitor.
+        Some(1) => Some("contain"),
         Some(3) => Some("stretch"),
         _ => None,
     }
 }
 
 pub fn load(dir: &Path) -> Vec<Property> {
-    let Ok(bytes) = std::fs::read(dir.join("project.json")) else { return Vec::new() };
-    let Ok(json) = serde_json::from_slice::<Value>(&bytes) else { return Vec::new() };
+    let Ok(bytes) = std::fs::read(dir.join("project.json")) else {
+        return Vec::new();
+    };
+    let Ok(json) = serde_json::from_slice::<Value>(&bytes) else {
+        return Vec::new();
+    };
     let builtin = if json["type"].as_str().is_some_and(|t| t.eq_ignore_ascii_case("video")) {
         video_properties()
     } else {
@@ -230,11 +291,15 @@ pub fn holds(condition: &str, values: &BTreeMap<String, Value>) -> bool {
         (_, Some(p)) => (true, p),
         _ => return true,
     };
-    let Some(name) = parts.0.trim().strip_suffix(".value") else { return true };
+    let Some(name) = parts.0.trim().strip_suffix(".value") else {
+        return true;
+    };
     if condition.contains("&&") || condition.contains("||") {
         return true;
     }
-    let Some(value) = values.get(name.trim()) else { return true };
+    let Some(value) = values.get(name.trim()) else {
+        return true;
+    };
     let wanted = parts.1.trim().trim_matches(|c| c == '\'' || c == '"');
     let wanted = if wanted == "1" && value.is_boolean() {
         "true"
@@ -352,5 +417,35 @@ mod tests {
         assert!(!same(&json!(true), &json!(false)));
         assert!(!same(&json!(null), &json!("")));
         assert!(same(&json!(null), &json!(null)));
+    }
+
+    fn values(pairs: Value) -> serde_json::Map<String, Value> {
+        pairs.as_object().cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn the_originals_sliders_become_the_renderers_look() {
+        let look = look(&values(
+            json!({ "rate": 150, "alignmentfliph": true, "wec_e": true, "wec_brs": 75, "wec_hue": 25 }),
+        ));
+        assert!(look.contains(&("rate", json!(1.5))));
+        assert!(look.contains(&("flip", json!(true))));
+        assert!(look.contains(&("brightness", json!(1.5))));
+        assert!(look.contains(&("hue", json!(-90.0))));
+        // Not set: plain.
+        assert!(look.contains(&("contrast", Value::Null)));
+    }
+
+    #[test]
+    fn colours_count_only_while_the_colour_options_are_on() {
+        let look = look(&values(json!({ "wec_brs": 75, "wec_hue": 25, "rate": 50 })));
+        assert!(look.contains(&("brightness", Value::Null)) && look.contains(&("hue", Value::Null)));
+        assert!(look.contains(&("rate", json!(0.5))));
+    }
+
+    #[test]
+    fn a_wallpaper_nothing_was_set_for_gets_a_plain_look() {
+        // What the wallpaper shown before left on the monitor goes.
+        assert!(look(&serde_json::Map::new()).iter().all(|(_, value)| value.is_null()));
     }
 }
