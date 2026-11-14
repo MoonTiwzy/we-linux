@@ -909,15 +909,72 @@ fn lock_file() -> Option<std::fs::File> {
 }
 
 /// Start `we-linux daemon` on its own unless one runs already.
+/// The daemon that runs, if one does: its process and the program it is, as
+/// the system has it (a program replaced on the disk reads "... (deleted)").
+fn running_daemon() -> Option<(i32, PathBuf)> {
+    let own = std::process::id() as i32;
+    std::fs::read_dir("/proc").ok()?.flatten().find_map(|entry| {
+        let pid: i32 = entry.file_name().to_str()?.parse().ok()?;
+        let line = std::fs::read(entry.path().join("cmdline")).ok()?;
+        let mut words = line.split(|byte| *byte == 0);
+        let program = String::from_utf8_lossy(words.next()?).into_owned();
+        let is_daemon = pid != own
+            && Path::new(&program)
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().contains("we-linux"))
+            && words.next() == Some(b"daemon".as_slice());
+        if !is_daemon {
+            return None;
+        }
+        // The one that holds this runtime directory's lock: a second daemon with a
+        // directory of its own (a test's) is nobody's to replace.
+        let lock = runtime_dir().join("daemon.lock");
+        let holds = std::fs::read_dir(entry.path().join("fd"))
+            .ok()?
+            .flatten()
+            .any(|fd| std::fs::read_link(fd.path()).is_ok_and(|file| file == lock));
+        // Another user's process does not show its program: not ours either.
+        holds.then(|| std::fs::read_link(entry.path().join("exe")).ok()).flatten().map(|exe| (pid, exe))
+    })
+}
+
+/// Whether the daemon that runs is to make way for this program: it is another
+/// file, or the same file as it was before it was replaced. After an update the
+/// window is the new program and the daemon, with the renderer it started,
+/// still the old one: what was fixed stays broken until a reboot, and nothing
+/// says why.
+fn outdated(running: &Path, own: &Path) -> bool {
+    running != own
+}
+
 pub fn ensure_daemon() -> Result<(), String> {
     let Some(lock) = lock_file() else {
         return Err("no runtime directory".into());
     };
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     if lock.try_lock().is_err() {
-        return Ok(());
+        let Some((pid, running)) = running_daemon() else {
+            return Ok(());
+        };
+        if !outdated(&running, &exe) {
+            return Ok(());
+        }
+        log::info(format!(
+            "the daemon that runs is another program ({}): it makes way for {}",
+            running.display(),
+            exe.display()
+        ));
+        // It stops its renderer and leaves on SIGTERM; the lock is free when it has.
+        unsafe { kill(pid, SIGTERM) };
+        let since = Instant::now();
+        while lock.try_lock().is_err() {
+            if since.elapsed() > Duration::from_secs(8) {
+                return Err("the old daemon does not stop".into());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
     drop(lock);
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     Command::new(exe)
         .arg("daemon")
         .process_group(0)
@@ -1731,6 +1788,18 @@ pub fn strip_colours(line: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_daemon_of_another_program_makes_way_and_one_of_this_program_stays() {
+        let own = Path::new("/nix/store/new-we-linux/bin/.we-linux-wrapped");
+        assert!(outdated(Path::new("/nix/store/old-we-linux/bin/.we-linux-wrapped"), own));
+        // Installed over: the running one is the file that was there before.
+        assert!(outdated(
+            Path::new("/home/u/.local/bin/we-linux (deleted)"),
+            Path::new("/home/u/.local/bin/we-linux")
+        ));
+        assert!(!outdated(own, own));
+    }
+
     use super::*;
     use std::os::unix::net::UnixListener;
 
