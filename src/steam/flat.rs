@@ -390,9 +390,7 @@ impl Steam {
                     "клиент Steam старше, чем {}: обнови Steam",
                     path.display()
                 ),
-                sdk::init_result::FAILED_GENERIC => {
-                    tf!("Steam does not answer: {why}", "Steam не отвечает: {why}")
-                }
+                // FailedGeneric, with Steam's own words (not signed in, say).
                 _ => tf!("Steam does not answer: {why}", "Steam не отвечает: {why}"),
             }));
         }
@@ -441,7 +439,7 @@ impl Steam {
             sdk::call_failure::STEAM_GONE => Error::Gone,
             sdk::call_failure::NETWORK_FAILURE => Error::Refused(sdk::result::NO_CONNECTION),
             sdk::call_failure::MISMATCHED_CALLBACK => Error::Mismatch,
-            sdk::call_failure::NONE | sdk::call_failure::INVALID_HANDLE => Error::NoAnswer,
+            // None, InvalidHandle, or one a later Steam adds: no answer to read.
             _ => Error::NoAnswer,
         }
     }

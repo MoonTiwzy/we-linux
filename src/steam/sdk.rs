@@ -30,7 +30,6 @@ pub const FRIENDS_ACCESSORS: [&str; 2] = ["SteamAPI_SteamFriends_v018", "SteamAP
 /// `ESteamAPIInitResult`, what `SteamAPI_InitFlat` returns (steam_api.h).
 pub mod init_result {
     pub const OK: i32 = 0;
-    pub const FAILED_GENERIC: i32 = 1;
     pub const NO_STEAM_CLIENT: i32 = 2;
     pub const VERSION_MISMATCH: i32 = 3;
 }
@@ -102,10 +101,8 @@ pub mod item_state {
 
 /// `ESteamAPICallFailure` (isteamutils.h): why a call result did not come.
 pub mod call_failure {
-    pub const NONE: i32 = -1;
     pub const STEAM_GONE: i32 = 0;
     pub const NETWORK_FAILURE: i32 = 1;
-    pub const INVALID_HANDLE: i32 = 2;
     pub const MISMATCHED_CALLBACK: i32 = 3;
 }
 
