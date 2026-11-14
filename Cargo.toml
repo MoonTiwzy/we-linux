@@ -34,8 +34,10 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 [profile.release]
 strip = true
 
-# The interface's generated code is glue between properties: optimising it hard
-# buys nothing a user could see and takes most of a release build.
+# The interface's generated code is glue between properties; what draws is in the
+# toolkit, which is optimised as usual. Optimising the glue buys nothing that could be
+# measured (the window starts in the same CPU time either way) and was most of a
+# release build.
 [profile.release.package.we-linux-ui]
-opt-level = 1
+opt-level = 0
 codegen-units = 256
