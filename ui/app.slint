@@ -588,15 +588,14 @@ export component AppWindow inherits Window {
                                 icon: tab.icon;
                                 text: tab.text;
                                 caret: i == 0;
+                                // A click goes to the tab. The original opens the menu of
+                                // "Installed" under the pointer, where it takes the click meant
+                                // for the tab: here it opens on a click on the tab one is on.
                                 clicked => {
                                     if (root.tab != i) {
                                         root.tab = i;
                                         root.tab-changed(i);
-                                    }
-                                }
-                                // The menu of "Installed" opens under the pointer, as in the original.
-                                entered => {
-                                    if (i == 0) {
+                                    } else if (i == 0) {
                                         group-menu.show();
                                     }
                                 }

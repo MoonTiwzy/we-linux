@@ -416,10 +416,14 @@ pub fn tell_property(wallpaper: &Path, name: &str, value: &Value) {
             }
             // The built-in ones are the monitor's look. Switching the colour
             // options changes what four of them mean: all are told again.
-            if crate::props::look_of(&name, &value, true).is_some() || name == "wec_e" {
+            let own = crate::props::own_names(&wallpaper);
+            if !own.contains(&name)
+                && (crate::props::look_of(&name, &value, true).is_some() || name == "wec_e")
+            {
                 // The value told may not be saved yet.
                 let mut values = properties_of(&wallpaper);
                 values.insert(name.clone(), value.clone());
+                values.retain(|name, _| !own.contains(name));
                 for (key, value) in crate::props::look(&values) {
                     let _ = call(
                         json!({ "cmd": "set", "path": format!("outputs/{output}/look/{key}"), "value": value }),
@@ -1268,7 +1272,10 @@ pub fn run_daemon() {
                                 let _ = call(
                                     json!({ "cmd": "set", "path": format!("outputs/{monitor}/fill"), "value": fill }),
                                 );
-                                for (key, value) in crate::props::look(&properties_of(&wallpaper)) {
+                                let own = crate::props::own_names(&wallpaper);
+                                let mut values = properties_of(&wallpaper);
+                                values.retain(|name, _| !own.contains(name));
+                                for (key, value) in crate::props::look(&values) {
                                     let _ = call(
                                         json!({ "cmd": "set", "path": format!("outputs/{monitor}/look/{key}"), "value": value }),
                                     );

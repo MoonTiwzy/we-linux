@@ -116,7 +116,7 @@ fn video_properties() -> Vec<Property> {
             25.0,
             200.0,
         )),
-        row("volume", t("Volume", "Громкость"), Kind::Slider, Value::from(50), 0.0, 100.0),
+        done(row("volume", t("Volume", "Громкость"), Kind::Slider, Value::from(100), 0.0, 100.0)),
         done(row(
             "wec_e",
             t("Show color options", "Показать настройки цвета"),
@@ -153,12 +153,24 @@ pub fn look_of(name: &str, value: &Value, colours: bool) -> Option<(&'static str
     match name {
         "alignmentfliph" => Some(("flip", Value::Bool(value.as_bool().unwrap_or(false)))),
         "rate" => Some(("rate", Value::from(number? / 100.0))),
+        "volume" => Some(("volume", Value::from(number? / 100.0))),
         "wec_brs" => around_one("brightness"),
         "wec_con" => around_one("contrast"),
         "wec_sa" => around_one("saturation"),
         "wec_hue" => Some(("hue", if colours { Value::from((number? - 50.0) * 3.6) } else { Value::Null })),
         _ => None,
     }
+}
+
+/// The names of a wallpaper's own properties: a built-in one of the same
+/// name is not built in for that wallpaper.
+pub fn own_names(dir: &Path) -> Vec<String> {
+    std::fs::read(dir.join("project.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|json| json.pointer("/general/properties").and_then(Value::as_object).cloned())
+        .map(|map| map.keys().cloned().collect())
+        .unwrap_or_default()
 }
 
 /// The look a wallpaper's saved values ask for, value by value. Every value
@@ -168,7 +180,7 @@ pub fn look_of(name: &str, value: &Value, colours: bool) -> Option<(&'static str
 pub fn look(values: &serde_json::Map<String, Value>) -> Vec<(&'static str, Value)> {
     let colours = values.get("wec_e").and_then(Value::as_bool).unwrap_or(false);
     let mut look: Vec<(&'static str, Value)> =
-        ["flip", "rate", "brightness", "contrast", "saturation", "hue"]
+        ["flip", "rate", "volume", "brightness", "contrast", "saturation", "hue"]
             .into_iter()
             .map(|key| (key, Value::Null))
             .collect();
@@ -201,14 +213,18 @@ pub fn load(dir: &Path) -> Vec<Property> {
     let Ok(json) = serde_json::from_slice::<Value>(&bytes) else {
         return Vec::new();
     };
+    // A video gets all of the built-in ones; every other wallpaper how loud
+    // and how fast it plays, which is what one reaches for most.
     let builtin = if json["type"].as_str().is_some_and(|t| t.eq_ignore_ascii_case("video")) {
         video_properties()
     } else {
-        Vec::new()
+        video_properties().into_iter().filter(|row| row.name == "volume" || row.name == "rate").collect()
     };
     let Some(map) = json.pointer("/general/properties").and_then(Value::as_object) else {
         return builtin;
     };
+    // A name the wallpaper uses for a property of its own is the wallpaper's.
+    let builtin: Vec<Property> = builtin.into_iter().filter(|row| !map.contains_key(&row.name)).collect();
     let mut list: Vec<(i64, Property)> = map
         .iter()
         // The scheme colour is the editor's: the browser leaves it out.
