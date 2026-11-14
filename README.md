@@ -49,9 +49,12 @@ changes it later.
 
 - **Wallpaper Engine, bought and installed in Steam.** Its `assets` folder holds the shaders
   every scene needs. Nothing of Wallpaper Engine is shipped here.
-- **Steam running**, for the workshop tabs. The library and your wallpapers work without it.
+- **Steam running**, for the workshop tabs. The library and your wallpapers work without it,
+  and when Steam starts (or comes back after it was closed) the workshop does too, by itself.
 - **One native Linux game installed in Steam** (any free one will do). Every native game
-  carries Valve's `libsteam_api.so`; WE Linux finds it by itself and keeps a copy.
+  carries Valve's `libsteam_api.so`; WE Linux finds it by itself and keeps a copy. It looks at
+  every game's copy and takes the first one of the Steamworks version it knows; a copy of
+  another version is left alone, never loaded.
 - **Wayland** with layer-shell. Hyprland is what it is developed and tested on; Sway, niri,
   river and KDE Plasma have the protocol it needs.
 - OpenGL 3.3, and at run time `libmpv` (video and sound) and `ffmpeg` (cheaper copies of
@@ -248,7 +251,9 @@ Something does not work? Run `we-linux doctor` and read what it says is `NOT FOU
 | You see | Do this |
 |---|---|
 | The workshop tab says Steam does not answer | Start Steam and log in. Your account must own Wallpaper Engine. |
-| "libsteam_api.so was not found" | Install any native Linux game in Steam (a free one is fine) and open WE Linux again. |
+| "libsteam_api.so was not found" | Install any native Linux game in Steam (a free one is fine). The workshop picks it up by itself within a few seconds. |
+| "no libsteam_api.so this WE Linux can use" | The games' copies are of another Steamworks version; the message says which file and why. Install another native game, update WE Linux, or name a fitting copy in `WE_LINUX_STEAM_API`. |
+| "Steam was closed" | Start Steam again: the workshop comes back by itself. Your library and the wallpapers on the desktop are not affected. |
 | A wallpaper is set but the desktop does not change | `we-linux status`. It prints the error: usually Wallpaper Engine itself is not installed in Steam (no `assets`), or `wepaper` is not on the PATH. Then look at the renderer's log. |
 | The static wallpaper covers the live one | Hyprland: the daemon's layer rule did not take, add it by hand (above). Other compositors: start `we-linux daemon` after your wallpaper daemon. |
 | The wallpaper is gone after a reboot | Start `we-linux daemon` with your session (First run). |
@@ -270,6 +275,14 @@ flowchart LR
     D -- still frame --> A["awww / swww / hyprpaper"]
     D -- hook --> X["your colours:<br>matugen, wal, wallust"]
 ```
+
+The workshop is Valve's `libsteam_api.so`, loaded when the window needs it and not linked, so
+the program starts and the library works with no Steam at all. Before a copy is loaded, WE Linux
+checks that it is a library of this machine with every function it calls and the workshop
+interface version (`SteamUGC v021`) whose layouts it was built for, and refuses any other with
+the reason. Every answer from Steam is checked for its result code and read at the size Steam
+confirms. Steam closing is noticed within a second; the session is ended and started again as
+soon as Steam is back.
 
 The window never draws a wallpaper. It writes what you picked to a file; the daemon reads it
 and tells the renderer over its socket: this wallpaper on that monitor, this property, that
