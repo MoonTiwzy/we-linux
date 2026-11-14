@@ -39,14 +39,15 @@ Engine's own window, plus a small daemon that keeps the wallpaper on your deskto
   textures and video decoders shared between them, nothing running that no wallpaper needs.
   Changing a setting or a property never restarts it.
 
-| One scene with a 4K video, two 1440p monitors | Video memory | Memory | CPU |
+| One scene with a 4K video, one 1440p monitor | Video memory | Memory | CPU |
 |---|---|---|---|
-| WE Linux before wepaper | 0.30 GB | 0.65 GB | 40-50% of a core |
-| **WE Linux with wepaper** | **0.13 GB** | **0.16 GB** | **20-25%** |
+| WE Linux before wepaper | 108 MiB | 476 MB | 39% of a core |
+| **WE Linux with wepaper** | **98 MiB** | **221 MB** | **19%** |
 
-<sub>RTX 5070, 60 fps, one scene measured; yours will differ. The video is decoded on the CPU at
-the monitor's size, once for both monitors; decoding on the GPU is one switch in Settings. More
-wallpapers, measured one by one, are in
+<sub>RTX 5070, 60 fps, the two measured one after the other on the same machine; yours will
+differ. The video is decoded on the CPU at the monitor's size, once however many monitors show
+it: a second monitor costs its surface (about 33 MiB of video memory) and no second decoder.
+Decoding on the GPU is one switch in Settings. More wallpapers, measured one by one, are in
 [wepaper's numbers](https://github.com/MoonTiwzy/wepaper/blob/main/docs/performance.md).</sub>
 
 English and Russian: the app asks on the first start, and the language box in Settings
