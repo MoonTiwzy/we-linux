@@ -515,6 +515,20 @@ fn stop(child: &mut Child) {
     let _ = child.wait();
 }
 
+/// Waits for a renderer just started to answer and to have found the
+/// monitors: the wallpaper then goes up in this round of the daemon and not
+/// seconds later, in the next. Gives up when the renderer exits, or takes
+/// longer than a renderer ever does.
+fn await_renderer(child: &mut Child) {
+    let since = Instant::now();
+    while since.elapsed() < Duration::from_secs(2) {
+        if !outputs().is_empty() || !matches!(child.try_wait(), Ok(None)) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// A renderer that goes sooner than this after its start did not get to work.
 const SHORT_LIFE: Duration = Duration::from_secs(30);
 /// So many short lives in a row and the renderer is not started again.
@@ -677,7 +691,8 @@ pub fn run_daemon() {
             }
         } else if renderer.is_none() && short_lives < SHORT_LIVES {
             match spawn(&settings) {
-                Ok(child) => {
+                Ok(mut child) => {
+                    await_renderer(&mut child);
                     renderer = Some((child, Instant::now()));
                     down = None;
                     // A new renderer plays on every monitor, with these settings.
