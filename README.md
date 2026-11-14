@@ -248,6 +248,13 @@ we-linux workshop [TEXT] [--sort top|trend|new|subs|updated] [--type scene|video
                                           search the workshop: id, size, votes, title
 we-linux subscribe ID...                  subscribe and wait for Steam to download
 we-linux unsubscribe ID...                unsubscribe (Steam removes the files)
+we-linux clone NAME on|off                whether the wallpaper of every monitor is cloned on
+                                          that monitor or device
+we-linux devices                          the devices, each with its size, command and state
+we-linux device add NAME WxH COMMAND [--fps N]
+we-linux device set NAME KEY VALUE        name, size, fps, command, enabled, fill, zoom,
+                                          shift_x, shift_y
+we-linux device remove NAME
 we-linux daemon                           keep the wallpaper on the desktop
 ```
 
@@ -259,6 +266,47 @@ we-linux apply 3409533530 --output DP-2   # only on one monitor
 
 A picture is handed to awww or swww, whichever runs, else to the desktop's own wallpaper
 program (hyprpaper, Sway's background, Plasma's picture wallpaper).
+
+## Devices
+
+A wallpaper can also play on something that is not a monitor: the panel on a cooler's pump, a
+keyboard's screen, a stream. Such a thing is a **device**: a name, a size in pixels, a frame
+rate and a command. The renderer draws the device's wallpaper for it alone, at exactly its
+size, and writes every frame to the command's standard input as raw RGB (three bytes a pixel,
+rows from the top; the size is also in `WEPAPER_WIDTH` and `WEPAPER_HEIGHT`). Whatever can
+take that can be a device.
+
+To the rest of WE Linux a device is one more monitor. It stands in **Choose monitor** next to
+the screens and takes a wallpaper of its own (`we-linux apply ID --output NAME`), which it
+keeps when a wallpaper is set for every monitor. It is never under a window, so it plays on
+while the screens are paused under a fullscreen game.
+
+**Which monitors the cloned wallpaper goes on** is yours to say, for screens and devices
+alike: each monitor's menu in **Choose monitor** has "Clone wallpaper here" (`we-linux clone
+NAME on|off`). A monitor that is not cloned on shows its own wallpaper, or nothing. A new
+device starts that way: the screens have theirs, the device waits for its own.
+
+Devices are set up in **Settings > Devices**: the name, the size, the frame rate, the command,
+and the picture. The picture is what matters when the device is not shaped like the wallpaper.
+The tab shows what the device shows right now: drag it to move the wallpaper, turn the wheel
+over it to zoom in and out about the pointer, and the device follows as you do. **Fill** says
+how the wallpaper is fitted first (cropped to cover the device, whole with bars, or stretched);
+the zoom and the shifts, which have sliders too, frame the wallpaper itself, so what the fill
+cropped away comes into view and a zoomed picture stays sharp. "OK" keeps it, "Cancel" puts the
+device back. Or on the command line:
+
+```sh
+we-linux device add panel 480x480 send-frames      # send-frames: your program for the device
+we-linux apply 3409533530 --output panel
+we-linux device set panel fill contain
+we-linux device set panel zoom 150                 # percent; below 100 shows more of it
+we-linux device set panel shift_x -40              # percent of the device, right and up
+we-linux devices                                   # is it running, how many frames went
+```
+
+Web wallpapers play on a device too (their plugin draws the page at the device's size and
+sends the frames itself; the fill, zoom and shifts are not for them: a page lays itself out for
+the size it gets). Devices need wepaper 0.3 or newer.
 
 ## Settings
 
@@ -280,13 +328,17 @@ same switches and the hook:
   "playback_audio": "run",         // another program plays sound (pactl)
   "playback_sleep": "run",         // the monitor's power is off
   "still": true,             // give the static wallpaper program a still of the wallpaper
-  "hook": ""                 // a shell command run when the wallpaper changes
+  "hook": "",                // a shell command run when the wallpaper changes
+  "devices": [               // what shows a wallpaper and is not a monitor (see Devices)
+    { "name": "panel", "width": 480, "height": 480, "fps": 30, "command": "send-frames",
+      "enabled": true, "fill": "cover", "zoom": 100, "shift_x": 0, "shift_y": 0 }
+  ]
 }
 ```
 
 | What | Where |
 |---|---|
-| The wallpaper on the desktop, per-monitor wallpapers | `~/.config/we-linux/desktop.json` |
+| The wallpaper on the desktop, per-monitor wallpapers, the monitors it is not cloned on | `~/.config/we-linux/desktop.json` |
 | Changed properties of a wallpaper | `~/.config/we-linux/properties/<id>.json` |
 | The playlist and saved playlists | `~/.config/we-linux/playlist.json`, `playlists/` |
 | Preview and still caches | `~/.cache/we-linux/` |

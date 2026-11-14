@@ -1,7 +1,8 @@
 //! `--show key=value,...`: the window opens in a state of its own, for
 //! screenshots and checks. Not in the usage: it is a tool of development.
 //!
-//! tab=N, filters=0|1, select=N, settings=N (its tab), monitors, dialog=N,
+//! tab=N, filters=0|1, select=N, settings=N (its tab), scroll=N (the settings'
+//! devices tab, N pixels down), monitors, dialog=N,
 //! menu=N, mini, pick=a.b.c (tiles picked as Ctrl would), ask (the question
 //! Delete puts), band (a rectangle drawn over the grid), phase=P (the
 //! selected wallpaper on its way to the desktop, as if the renderer said so:
@@ -54,6 +55,10 @@ pub(super) fn apply(ui: &AppWindow, start_monitors: &Timer) -> [Timer; 3] {
             app.show_settings();
             ui.set_settings_tab(tab);
             ui.set_settings_open(true);
+            // scroll=N: the devices' tab, N pixels down.
+            if let Some(down) = number("scroll") {
+                ui.set_devices_offset(-(down as f32));
+            }
         }
     });
     if number("monitors").is_some() {

@@ -35,6 +35,24 @@ export struct SettingsValues {
     tells-sleep: bool,
 }
 
+/// A device: what shows a wallpaper and is not a monitor.
+export struct DeviceEntry {
+    name: string,
+    enabled: bool,
+    width: int,
+    height: int,
+    fps: int,
+    /// The program its frames go to.
+    command: string,
+    /// 0 cover, 1 contain, 2 stretch.
+    fill: int,
+    /// Percent: 100 as the fill has it.
+    zoom: float,
+    /// Percent of the device's width and height, right and up.
+    shift-x: float,
+    shift-y: float,
+}
+
 export struct PluginEntry {
     name: string,
     path: string,
@@ -117,6 +135,19 @@ export component SettingsView inherits Rectangle {
     in property <string> about;
     in property <string> caption;
     in property <[PluginEntry]> plugins;
+    /// The devices, edited in place; the one in the editor.
+    in-out property <[DeviceEntry]> devices;
+    in-out property <int> device;
+    callback device-add();
+    callback device-remove(int);
+    /// The picture of the device at that row was changed in the editor: it is
+    /// shown on the device at once, to be kept with "OK".
+    callback device-picture(int);
+    /// How far the devices' tab is scrolled.
+    in-out property <length> devices-offset;
+    /// What the device in the editor shows now, when it is known.
+    in property <image> device-preview;
+    in property <bool> device-previewed;
     callback accepted();
     callback cancelled();
     callback reset();
@@ -203,7 +234,7 @@ export component SettingsView inherits Rectangle {
                 alignment: start;
                 spacing: 2px;
                 height: 24px;
-                for name[i] in [L.t("Performance", "Производительность"), L.t("General", "Общее"), L.t("Plugins", "Плагины"), L.t("About", "О приложении")]: Rectangle {
+                for name[i] in [L.t("Performance", "Производительность"), L.t("General", "Общее"), L.t("Plugins", "Плагины"), L.t("Devices", "Устройства"), L.t("About", "О приложении")]: Rectangle {
                     width: label.preferred-width + 12px;
                     background: root.tab == i ? Theme.primary : transparent;
                     border-width: root.tab != i && pick.has-hover ? 1px : 0;
@@ -639,8 +670,321 @@ export component SettingsView inherits Rectangle {
             }
         }
 
+        // ------------------------------------------------------------ devices
+        if root.tab == 3: fifth := Scroll {
+            offset <=> root.devices-offset;
+            // The picture in it is moved by dragging: the tab itself scrolls by the wheel.
+            mouse-drag-pan: false;
+            x: 19px;
+            y: 65px;
+            width: parent.width - 29px;
+            height: parent.height - 65px - 60px;
+            content-height: five.preferred-height + 10px;
+            five := VerticalLayout {
+                width: fifth.visible-width - 2px;
+                alignment: start;
+                Rectangle { height: 8px; }
+                Text {
+                    text: L.t("A device shows a wallpaper and is not a monitor: the panel on a cooler, a keyboard's screen, a stream. The wallpaper is drawn for it at its own size, and the frames go to the device's command. In \"Choose monitor\" it is one more monitor.", "Устройство показывает обои, но это не монитор: панель водянки, экран клавиатуры, стрим. Обои рисуются под него отдельно, в его размере, а кадры уходят команде устройства. В «Выбрать монитор» оно стоит как ещё один монитор.");
+                    color: Theme.faint;
+                    font-size: 12.6px;
+                    wrap: word-wrap;
+                }
+                Group {
+                    title: L.t("Devices", "Устройства");
+                    icon: Icons.display;
+                    if root.devices.length > 0: Row {
+                        label: L.t("Device:", "Устройство:");
+                        hint: L.t("The device whose settings are below.", "Устройство, настройки которого ниже.");
+                        for d[i] in root.devices: Btn {
+                            horizontal-stretch: 1;
+                            kind: i == root.device ? 1 : 0;
+                            font-size: 12.6px;
+                            text: d.name == "" ? "…" : d.name;
+                            clicked => { root.device = i; }
+                        }
+                    }
+                    Row {
+                        label: L.t("New device:", "Новое устройство:");
+                        hint: L.t("One more device, to fill in below.", "Ещё одно устройство, заполняется ниже.");
+                        Btn {
+                            horizontal-stretch: 1;
+                            kind: 1;
+                            font-size: 12.6px;
+                            text: L.t("ADD", "ДОБАВИТЬ");
+                            clicked => { root.device-add(); }
+                        }
+                    }
+                }
+                // The editor is made anew for the device picked: its fields start
+                // from that device's values.
+                for d[i] in root.devices: VerticalLayout {
+                    if i == root.device: Group {
+                        title: d.name == "" ? L.t("New device", "Новое устройство") : d.name;
+                        icon: Icons.microchip;
+                        Row {
+                            label: L.t("Name:", "Название:");
+                            hint: L.t("The device's name among the monitors: letters, digits, spaces, - _ and .", "Имя устройства среди мониторов: буквы, цифры, пробелы, - _ и .");
+                            Field {
+                                horizontal-stretch: 1;
+                                height: 28px;
+                                font-size: 12.6px;
+                                max-length: 64;
+                                text: d.name;
+                                edited(text) => { root.devices[i].name = text; }
+                            }
+                        }
+                        Row {
+                            label: L.t("Enabled:", "Включено:");
+                            hint: L.t("Off, the device is kept here and gets no wallpaper.", "Выключенное устройство остаётся в списке, но обоев не получает.");
+                            Tick {
+                                checked: d.enabled;
+                                toggled => { root.devices[i].enabled = !d.enabled; }
+                            }
+                        }
+                        Row {
+                            label: L.t("Size, pixels:", "Размер, пикселей:");
+                            hint: L.t("The size of the device's picture. The wallpaper is drawn at exactly this size.", "Размер картинки устройства. Обои рисуются ровно в этом размере.");
+                            Field {
+                                width: 80px;
+                                height: 28px;
+                                font-size: 12.6px;
+                                max-length: 4;
+                                text: d.width;
+                                edited(text) => { root.devices[i].width = text.to-float(); }
+                            }
+                            Text {
+                                text: "×";
+                                color: Theme.faint;
+                                font-size: 12.6px;
+                                vertical-alignment: center;
+                            }
+                            Field {
+                                width: 80px;
+                                height: 28px;
+                                font-size: 12.6px;
+                                max-length: 4;
+                                text: d.height;
+                                edited(text) => { root.devices[i].height = text.to-float(); }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                        Row {
+                            label: L.t("FPS:", "Кадров/сек.:");
+                            hint: L.t("The most frames a second the device is sent. A device slower than this gets the newest frame each time.", "Сколько кадров в секунду уходит устройству, не больше. Если оно не успевает, ему каждый раз достаётся самый свежий кадр.");
+                            Rail {
+                                horizontal-stretch: 1;
+                                minimum: 1;
+                                maximum: 60;
+                                value: d.fps;
+                                changed(v) => { root.devices[i].fps = round(v); }
+                            }
+                            Text {
+                                width: 28px;
+                                text: d.fps;
+                                color: Theme.text;
+                                font-size: 12.6px;
+                                vertical-alignment: center;
+                                horizontal-alignment: right;
+                            }
+                        }
+                        Row {
+                            label: L.t("Command:", "Команда:");
+                            hint: L.t("The program the frames go to, on its standard input: raw RGB, three bytes a pixel, rows from the top. It finds the size in WEPAPER_WIDTH and WEPAPER_HEIGHT.", "Программа, которой уходят кадры, на её стандартный ввод: сырой RGB, три байта на пиксель, строки сверху вниз. Размер она найдёт в WEPAPER_WIDTH и WEPAPER_HEIGHT.");
+                            Field {
+                                horizontal-stretch: 1;
+                                height: 28px;
+                                font-size: 12.6px;
+                                placeholder: L.t("a program that reads the frames", "программа, которая читает кадры");
+                                text: d.command;
+                                edited(text) => { root.devices[i].command = text; }
+                            }
+                        }
+                        Row {
+                            label: L.t("Remove the device:", "Удалить устройство:");
+                            Btn {
+                                horizontal-stretch: 1;
+                                kind: 2;
+                                font-size: 12.6px;
+                                text: L.t("REMOVE", "УДАЛИТЬ");
+                                clicked => { root.device-remove(i); }
+                            }
+                        }
+                    }
+                    if i == root.device: Group {
+                        title: L.t("Picture", "Картинка");
+                        icon: Icons.image;
+                        Row {
+                            label: L.t("Fill:", "Заполнение:");
+                            hint: L.t("How a wallpaper of another shape fills the device: cropped to cover it, whole with bars, or stretched.", "Как обои другой формы заполняют устройство: обрезаются, чтобы закрыть его целиком, помещаются целиком с полями или растягиваются.");
+                            Pick {
+                                horizontal-stretch: 1;
+                                options: [L.t("Cover (crop)", "Заполнить (обрезать)"), L.t("Fit (whole picture)", "Вписать (целиком)"), L.t("Stretch", "Растянуть")];
+                                index: d.fill;
+                                selected(n) => {
+                                    root.devices[i].fill = n;
+                                    root.device-picture(i);
+                                }
+                            }
+                        }
+                        // What the device shows right now. The picture is moved by
+                        // dragging it and enlarged with the wheel, about the pointer.
+                        Rectangle {
+                            height: 236px;
+                            Rectangle {
+                                property <float> shape: max(1, d.width) / max(1, d.height);
+                                x: (parent.width - self.width) / 2;
+                                y: 8px;
+                                width: self.shape >= 1 ? 220px : 220px * self.shape;
+                                height: self.shape >= 1 ? 220px / self.shape : 220px;
+                                background: #000000;
+                                border-width: 1px;
+                                border-color: grab.pressed ? Theme.primary : Theme.field-border;
+                                clip: true;
+                                if root.device-previewed: Image {
+                                    width: parent.width;
+                                    height: parent.height;
+                                    source: root.device-preview;
+                                    image-fit: fill;
+                                }
+                                if !root.device-previewed: Text {
+                                    x: 8px;
+                                    width: parent.width - 16px;
+                                    height: parent.height;
+                                    text: L.t("The device's picture shows here once the device is saved (OK) and has a wallpaper.", "Картинка устройства появится здесь, когда устройство сохранено (OK) и на нём есть обои.");
+                                    color: Theme.faint;
+                                    font-size: 11.2px;
+                                    wrap: word-wrap;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                grab := TouchArea {
+                                    property <float> from-x;
+                                    property <float> from-y;
+                                    mouse-cursor: self.pressed ? MouseCursor.grabbing : MouseCursor.grab;
+                                    pointer-event(event) => {
+                                        if event.kind == PointerEventKind.down {
+                                            self.from-x = d.shift-x;
+                                            self.from-y = d.shift-y;
+                                        }
+                                    }
+                                    moved => {
+                                        if self.pressed {
+                                            root.devices[i].shift-x = clamp(self.from-x + (self.mouse-x - self.pressed-x) / self.width * 100, -2000, 2000);
+                                            root.devices[i].shift-y = clamp(self.from-y - (self.mouse-y - self.pressed-y) / self.height * 100, -2000, 2000);
+                                            root.device-picture(i);
+                                        }
+                                    }
+                                    scroll-event(event) => {
+                                        // The point under the pointer stays under it.
+                                        let zoom = clamp(d.zoom * (event.delta-y > 0 ? 1.1 : 1 / 1.1), 5, 2000);
+                                        let by = zoom / max(1, d.zoom);
+                                        let at-x = (self.mouse-x / self.width - 0.5) * 100;
+                                        let at-y = (0.5 - self.mouse-y / self.height) * 100;
+                                        root.devices[i].shift-x = clamp(at-x - (at-x - d.shift-x) * by, -2000, 2000);
+                                        root.devices[i].shift-y = clamp(at-y - (at-y - d.shift-y) * by, -2000, 2000);
+                                        root.devices[i].zoom = zoom;
+                                        root.device-picture(i);
+                                        return accept;
+                                    }
+                                }
+                            }
+                        }
+                        Text {
+                            text: L.t("Drag the picture to move it, turn the wheel over it to zoom.", "Тяни картинку, чтобы подвинуть, крути колесо над ней, чтобы приблизить или отдалить.");
+                            color: Theme.faint;
+                            font-size: 11.2px;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                        Row {
+                            label: L.t("Zoom:", "Увеличение:");
+                            hint: L.t("100% is as the fill has it. More enlarges the wallpaper about the device's middle, less shows more of it, with the wallpaper's background around.", "100% это как задаёт заполнение. Больше: обои крупнее от середины устройства, меньше: видно больше обоев, вокруг их фон.");
+                            Rail {
+                                horizontal-stretch: 1;
+                                minimum: 10;
+                                maximum: 500;
+                                value: d.zoom;
+                                changed(v) => {
+                                    root.devices[i].zoom = round(v);
+                                    root.device-picture(i);
+                                }
+                            }
+                            Text {
+                                width: 46px;
+                                text: round(d.zoom) + "%";
+                                color: Theme.text;
+                                font-size: 12.6px;
+                                vertical-alignment: center;
+                                horizontal-alignment: right;
+                            }
+                        }
+                        Row {
+                            label: L.t("Shift right:", "Сдвиг вправо:");
+                            hint: L.t("The wallpaper moved, in percent of the device's width: what the fill cropped away comes into view.", "Обои сдвигаются, в процентах от ширины устройства: показывается то, что обрезало заполнение.");
+                            Rail {
+                                horizontal-stretch: 1;
+                                minimum: -300;
+                                maximum: 300;
+                                value: d.shift-x;
+                                changed(v) => {
+                                    root.devices[i].shift-x = round(v);
+                                    root.device-picture(i);
+                                }
+                            }
+                            Text {
+                                width: 46px;
+                                text: round(d.shift-x) + "%";
+                                color: Theme.text;
+                                font-size: 12.6px;
+                                vertical-alignment: center;
+                                horizontal-alignment: right;
+                            }
+                        }
+                        Row {
+                            label: L.t("Shift up:", "Сдвиг вверх:");
+                            hint: L.t("The wallpaper moved, in percent of the device's height.", "Обои сдвигаются, в процентах от высоты устройства.");
+                            Rail {
+                                horizontal-stretch: 1;
+                                minimum: -300;
+                                maximum: 300;
+                                value: d.shift-y;
+                                changed(v) => {
+                                    root.devices[i].shift-y = round(v);
+                                    root.device-picture(i);
+                                }
+                            }
+                            Text {
+                                width: 46px;
+                                text: round(d.shift-y) + "%";
+                                color: Theme.text;
+                                font-size: 12.6px;
+                                vertical-alignment: center;
+                                horizontal-alignment: right;
+                            }
+                        }
+                        Row {
+                            label: L.t("Position:", "Позиция:");
+                            Btn {
+                                horizontal-stretch: 1;
+                                kind: 1;
+                                font-size: 12.6px;
+                                text: L.t("RESET", "СБРОСИТЬ");
+                                clicked => {
+                                    root.devices[i].zoom = 100;
+                                    root.devices[i].shift-x = 0;
+                                    root.devices[i].shift-y = 0;
+                                    root.device-picture(i);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // ------------------------------------------------------------ about
-        if root.tab == 3: fourth := Scroll {
+        if root.tab == 4: fourth := Scroll {
             x: 19px;
             y: 70px;
             width: parent.width - 29px;

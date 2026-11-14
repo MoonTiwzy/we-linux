@@ -227,6 +227,7 @@ impl App {
             )
         };
         let monitors = desktop::monitors();
+        let apart = desktop::Desktop::load().apart;
         let left = monitors.iter().map(|m| m.x).fold(f32::MAX, f32::min);
         let top = monitors.iter().map(|m| m.y).fold(f32::MAX, f32::min);
         let rows: Vec<MonitorEntry> = monitors
@@ -238,10 +239,11 @@ impl App {
                     .iter()
                     .find(|(name, _)| name == &m.name)
                     .map(|(_, path)| path)
-                    .or(self.desk.current.as_ref())
+                    .or(self.desk.current.as_ref().filter(|_| !apart.contains(&m.name)))
                     .map(title)
                     .unwrap_or_default()
                     .into(),
+                cloned: !apart.contains(&m.name),
                 x: m.x - left,
                 y: m.y - top,
                 w: m.width,
@@ -286,6 +288,25 @@ impl App {
         self.desk.current = desktop::current();
         self.report(result, t("The wallpaper is off", "Обои убраны"));
         self.refresh_marks();
+        self.show_monitors();
+    }
+
+    /// The chooser's "clone here": whether the wallpaper of every monitor is put
+    /// on this one too.
+    pub(super) fn toggle_clone(&mut self, index: i32) {
+        let Some(name) =
+            usize::try_from(index).ok().and_then(|i| desktop::monitors().into_iter().nth(i)).map(|m| m.name)
+        else {
+            return;
+        };
+        let cloned = !desktop::cloned(&name);
+        let result = desktop::set_cloned(&name, cloned).and_then(|()| engine::ensure_daemon());
+        let said = if cloned {
+            tf!("{name} shows the wallpaper of every monitor", "{name} показывает общие обои")
+        } else {
+            tf!("{name} is apart: its own wallpaper, or none", "{name} отдельно: свои обои или ничего")
+        };
+        self.report(result, &said);
         self.show_monitors();
     }
 

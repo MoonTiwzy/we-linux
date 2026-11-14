@@ -462,7 +462,7 @@ impl App {
     pub(super) fn resolution_changed(&mut self, recommended: bool, other: bool) {
         // Recommended: the resolutions of the shape of the monitors (wide,
         // ultra wide, portrait), dynamic ones, and unknown ones when wanted.
-        let fitting = fitting_sections(&desktop::monitors());
+        let fitting = fitting_sections(&desktop::screens());
         if let Some(group) = self.filters.groups.iter_mut().find(|g| g.title == "Разрешение экрана")
         {
             for choice in &mut group.choices {

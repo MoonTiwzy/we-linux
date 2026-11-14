@@ -7,10 +7,10 @@ import { Icons, Icon, Glyph } from "icons.slint";
 import { Btn, Check, Caret, DropList, Field, Rail, Scroll, GroupBox, Ruled, Link, Hint, Menu, MenuEntry, Header } from "widgets.slint";
 import { Item, PageButton, Prop, Tile, Pager, PropRow, SourceTab } from "parts.slint";
 import { MonitorEntry, MonitorPanel } from "monitors.slint";
-import { SettingsView, SettingsValues, PluginEntry } from "settings.slint";
+import { SettingsView, SettingsValues, PluginEntry, DeviceEntry } from "settings.slint";
 import { Busy, Toast, Alert } from "busy.slint";
 
-export { L, Tip, Theme, Icons, Glyph, Item, PageButton, Prop, MonitorEntry, SettingsValues, PluginEntry, MenuEntry }
+export { L, Tip, Theme, Icons, Glyph, Item, PageButton, Prop, MonitorEntry, SettingsValues, PluginEntry, DeviceEntry, MenuEntry }
 
 /// A line of a filter group: a box (kind 0), a divider (1), or a heading
 /// with "Все" and "Ничего" for its sub-group (2).
@@ -214,6 +214,17 @@ export component AppWindow inherits Window {
     in-out property <int> settings-tab;
     in property <string> about;
     in property <[PluginEntry]> plugins;
+    /// The devices in the settings' editor, and the one picked there.
+    in-out property <[DeviceEntry]> devices;
+    in-out property <int> device;
+    callback device-add();
+    callback device-remove(int);
+    callback device-picture(int);
+    in property <image> device-preview;
+    in property <bool> device-previewed;
+    in-out property <length> devices-offset;
+    /// The settings were closed without "OK".
+    callback settings-cancelled();
 
     /// 0 none, 3 filter settings, 4 playlist setup, 5 playlist load, 6 mobile,
     /// 7 load a preset, 8 save a preset, 9 the first run's language,
@@ -314,6 +325,7 @@ export component AppWindow inherits Window {
     callback playlist-clear();
     callback monitor-picked(int);
     callback monitor-cleared(int);
+    callback monitor-clone-toggled(int);
     callback monitors-on-start-changed(bool);
     callback settings-save();
     callback settings-reset();
@@ -1831,6 +1843,7 @@ export component AppWindow inherits Window {
         on-start <=> root.monitors-on-start;
         picked(i) => { root.monitor-picked(i); }
         cleared(i) => { root.monitor-cleared(i); }
+        clone-toggled(i) => { root.monitor-clone-toggled(i); }
         on-start-changed(on) => { root.monitors-on-start-changed(on); }
         backdrop: root.backdrop;
         covered: card-column.absolute-position.x - self.absolute-position.x;
@@ -1848,11 +1861,22 @@ export component AppWindow inherits Window {
         about: root.about;
         caption: root.caption;
         plugins: root.plugins;
+        devices <=> root.devices;
+        device <=> root.device;
+        device-add => { root.device-add(); }
+        device-picture(index) => { root.device-picture(index); }
+        devices-offset <=> root.devices-offset;
+        device-preview: root.device-preview;
+        device-previewed: root.device-previewed;
+        device-remove(index) => { root.device-remove(index); }
         accepted => {
             root.settings-save();
             root.settings-open = false;
         }
-        cancelled => { root.settings-open = false; }
+        cancelled => {
+            root.settings-open = false;
+            root.settings-cancelled();
+        }
         reset => { root.settings-reset(); }
         clear-cache => { root.cache-clear(); }
         cache-size: root.cache-size;

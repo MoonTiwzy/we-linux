@@ -89,6 +89,7 @@ pub(super) fn wire(ui: &AppWindow) {
     on!(on_open_monitors, |app| app.open_monitors());
     on!(on_monitor_picked, |app, index| app.pick_monitor(index));
     on!(on_monitor_cleared, |app, index| app.clear_monitor(index));
+    on!(on_monitor_clone_toggled, |app, index| app.toggle_clone(index));
     on!(on_monitors_on_start_changed, |app, on| app.monitors_on_start_changed(on));
     on!(on_monitor_profiles, |app, save| app.monitor_profiles(save));
     on!(on_profile_save, |app, name| app.profile_save(&name));
@@ -97,6 +98,10 @@ pub(super) fn wire(ui: &AppWindow) {
     on!(on_open_editor, |app| app.open_editor());
 
     on!(on_settings_shown, |app| app.show_settings());
+    on!(on_device_add, |app| app.device_add());
+    on!(on_device_remove, |app, index| app.device_remove(index));
+    on!(on_device_picture, |app, index| app.device_picture(index));
+    on!(on_settings_cancelled, |app| app.settings_cancelled());
     on!(on_settings_save, |app| app.save_settings());
     on!(on_settings_reset, |app| app.reset_settings());
     on!(on_cache_clear, |app| app.clear_cache());

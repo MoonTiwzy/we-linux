@@ -219,7 +219,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         app.show_tab();
         // "Choose monitor" first, where there is more than one to choose from
         // (over the window once it is on the screen: it is blurred behind).
-        if app.desk.monitors_on_start() && language.is_some() && desktop::monitors().len() > 1 {
+        if app.desk.monitors_on_start() && language.is_some() && desktop::screens().len() > 1 {
             start_monitors.start(TimerMode::SingleShot, Duration::from_millis(300), || {
                 slot::with(|app| app.blur_backdrop());
             });

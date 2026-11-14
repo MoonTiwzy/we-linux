@@ -13,6 +13,9 @@ we-linux apply <ID|PATH> [--output NAME]
                                   set a wallpaper (a workshop id, a wallpaper
                                   folder, a video or a picture) on every
                                   monitor, or on one
+we-linux clone NAME on|off        whether the wallpaper of every monitor is cloned
+                                  on that monitor or device (off: it shows its
+                                  own, or nothing; a new device starts off)
 we-linux off                      no live wallpaper
 we-linux status                   what is on the desktop
 we-linux clear-cache              empty the caches: previews, stills, copies of
@@ -26,6 +29,19 @@ we-linux workshop [TEXT] [--sort top|trend|new|subs|updated] [--type scene|video
                   [--page N]      search the workshop: id, size, votes, title
 we-linux subscribe ID...          subscribe and wait for Steam to download
 we-linux unsubscribe ID...        unsubscribe and remove the files
+we-linux devices                  what shows a wallpaper and is not a monitor
+                                  (a cooler's panel, a keyboard's screen): each
+                                  with its size, command and state
+we-linux device add NAME WxH COMMAND [--fps N]
+                                  a device: its frames go to COMMAND's standard
+                                  input as raw RGB; then `apply ID --output NAME`
+we-linux device set NAME KEY VALUE
+                                  change one: name, size, fps, command, enabled,
+                                  fill (cover|contain|stretch), and the part of
+                                  the wallpaper it shows: zoom (percent, 100 as
+                                  the fill has it, 5 to 2000), shift_x, shift_y
+                                  (percent of the device, right and up)
+we-linux device remove NAME
 we-linux daemon                   keep the wallpaper on the desktop: run it
                                   when the session starts (the window and
                                   `apply` start it when it is not running)";
@@ -89,6 +105,184 @@ pub fn run() -> Option<i32> {
             crate::log::info("we-linux off");
             done(desktop::off())
         }
+        "clone" => {
+            crate::log::as_role("command");
+            let (Some(name), Some(state)) = (args.get(1), args.get(2)) else {
+                eprintln!("{USAGE}");
+                return Some(2);
+            };
+            let on = match state.as_str() {
+                "on" | "true" | "yes" | "1" => true,
+                "off" | "false" | "no" | "0" => false,
+                _ => {
+                    eprintln!("{USAGE}");
+                    return Some(2);
+                }
+            };
+            let result = if desktop::monitors().iter().any(|m| &m.name == name) {
+                desktop::set_cloned(name, on)
+                    .and_then(|()| if engine::daemon_running() { engine::ensure_daemon() } else { Ok(()) })
+            } else {
+                Err(format!("there is no monitor or device {name}"))
+            };
+            match &result {
+                Ok(()) => crate::log::info(format!("we-linux clone {name} {state}")),
+                Err(why) => crate::log::warn(format!("we-linux clone {name} {state}: {why}")),
+            }
+            done(result)
+        }
+        "devices" => {
+            let settings = desktop::Settings::load();
+            if settings.devices.is_empty() {
+                say!("no devices: we-linux device add NAME WxH COMMAND");
+            }
+            let told = engine::call(serde_json::json!({ "cmd": "get", "path": "devices" })).ok();
+            for device in &settings.devices {
+                let state = match device.problem() {
+                    Some(problem) => problem,
+                    None if !device.enabled => "off".to_owned(),
+                    None => match told.as_ref().map(|told| &told[&device.name]) {
+                        Some(node) if node["error"].is_string() => {
+                            format!("not running: {}", node["error"].as_str().unwrap_or_default())
+                        }
+                        // A plugin (web wallpapers) writes its frames to the
+                        // device itself: the renderer has none to count.
+                        Some(node) if node["running"] == true => match node["sent"].as_u64().unwrap_or(0) {
+                            0 => "running".to_owned(),
+                            sent => format!("running, {sent} frames sent"),
+                        },
+                        Some(node) if node.is_object() => "ready (nothing is shown on it)".to_owned(),
+                        _ => "the renderer is not running".to_owned(),
+                    },
+                };
+                say!(
+                    "{}: {}x{}, {} fps, fill {}, zoom {}%, shift {} {}, `{}`: {state}",
+                    device.name,
+                    device.width,
+                    device.height,
+                    device.fps,
+                    device.fill,
+                    device.zoom,
+                    device.shift_x,
+                    device.shift_y,
+                    device.command
+                );
+            }
+            0
+        }
+        "device" => {
+            crate::log::as_role("command");
+            let rest: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
+            let mut settings = desktop::Settings::load();
+            let result = match rest.as_slice() {
+                ["add", name, size, command @ ..] if !command.is_empty() => (|| {
+                    let fps = command.iter().position(|a| *a == "--fps");
+                    let rate = match fps.and_then(|i| command.get(i + 1)) {
+                        Some(n) => n.parse::<u32>().map_err(|_| format!("--fps {n}: not a number"))?,
+                        None => 30,
+                    };
+                    let words: Vec<&str> = command
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| fps.is_none_or(|f| *i != f && *i != f + 1))
+                        .map(|(_, a)| *a)
+                        .collect();
+                    let (width, height) = size
+                        .split_once(['x', 'X'])
+                        .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+                        .ok_or_else(|| format!("{size}: the size is WIDTHxHEIGHT, like 480x480"))?;
+                    if settings.devices.iter().any(|d| d.name == *name) {
+                        return Err(format!("there is a device {name} already"));
+                    }
+                    let device = desktop::Device {
+                        name: (*name).to_owned(),
+                        width,
+                        height,
+                        fps: rate,
+                        command: words.join(" "),
+                        ..desktop::Device::default()
+                    };
+                    if let Some(problem) = device.problem() {
+                        return Err(problem);
+                    }
+                    settings.devices.push(device);
+                    // A device is not one of the screens: the wallpaper of every
+                    // monitor is not put on it until that is asked for.
+                    desktop::set_cloned(name, false)
+                })(),
+                ["remove", name] => {
+                    let before = settings.devices.len();
+                    settings.devices.retain(|d| d.name != *name);
+                    if settings.devices.len() == before {
+                        Err(format!("there is no device {name}"))
+                    } else {
+                        // Its own wallpaper goes with it.
+                        desktop::forget_output(name)
+                    }
+                }
+                ["set", name, key, value] => (|| {
+                    let device = settings
+                        .devices
+                        .iter_mut()
+                        .find(|d| d.name == *name)
+                        .ok_or_else(|| format!("there is no device {name}"))?;
+                    let number =
+                        || value.parse::<i64>().map_err(|_| format!("{key} takes a number, not {value}"));
+                    let percent = |range: (f32, f32)| {
+                        value
+                            .parse::<f32>()
+                            .ok()
+                            .filter(|n| n.is_finite())
+                            .map(|n| n.clamp(range.0, range.1))
+                            .ok_or_else(|| format!("{key} takes a number of percent, not {value}"))
+                    };
+                    match *key {
+                        "name" => {
+                            device.name = (*value).to_owned();
+                            if device.problem().is_none() {
+                                desktop::rename_output(name, value)?;
+                            }
+                        }
+                        "size" => {
+                            (device.width, device.height) = value
+                                .split_once(['x', 'X'])
+                                .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+                                .ok_or_else(|| format!("{value}: the size is WIDTHxHEIGHT"))?
+                        }
+                        "fps" => device.fps = number()?.clamp(1, 240) as u32,
+                        "command" => device.command = (*value).to_owned(),
+                        "enabled" => device.enabled = matches!(*value, "true" | "on" | "1" | "yes"),
+                        "fill" if ["cover", "contain", "stretch"].contains(value) => {
+                            device.fill = (*value).to_owned()
+                        }
+                        "fill" => return Err("fill takes cover, contain or stretch".to_owned()),
+                        "zoom" => device.zoom = percent(desktop::ZOOM_RANGE)?,
+                        "shift_x" => device.shift_x = percent(desktop::SHIFT_RANGE)?,
+                        "shift_y" => device.shift_y = percent(desktop::SHIFT_RANGE)?,
+                        _ => {
+                            return Err(format!(
+                                "a device has no {key}: name, size, fps, command, enabled, fill, zoom, shift_x, shift_y"
+                            ));
+                        }
+                    }
+                    device.problem().map_or(Ok(()), Err)
+                })(),
+                _ => {
+                    eprintln!("{USAGE}");
+                    return Some(2);
+                }
+            };
+            let result = result.and_then(|()| settings.save()).and_then(|()| {
+                // A daemon that runs reads the settings itself; none is started
+                // for a device nothing is shown on.
+                if engine::daemon_running() { engine::ensure_daemon() } else { Ok(()) }
+            });
+            match &result {
+                Ok(()) => crate::log::info(format!("we-linux device {}", rest.join(" "))),
+                Err(why) => crate::log::warn(format!("we-linux device {}: {why}", rest.join(" "))),
+            }
+            done(result)
+        }
         "status" => {
             let desktop = desktop::Desktop::load();
             match &desktop.wallpaper {
@@ -97,6 +291,9 @@ pub fn run() -> Option<i32> {
             }
             for (output, path) in &desktop.outputs {
                 say!("{output}: {}", path.display());
+            }
+            if !desktop.apart.is_empty() {
+                say!("not cloned on: {}", desktop.apart.join(", "));
             }
             let seen = engine::seen();
             say!(

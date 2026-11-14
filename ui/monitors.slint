@@ -19,6 +19,9 @@ export struct MonitorEntry {
     h: float,
     image: image,
     has-image: bool,
+    /// The wallpaper of every monitor is cloned on it (else it is apart: its
+    /// own wallpaper, or none).
+    cloned: bool,
 }
 
 export component MonitorPanel inherits Rectangle {
@@ -31,6 +34,7 @@ export component MonitorPanel inherits Rectangle {
     in property <image> backdrop;
     callback picked(int);
     callback cleared(int);
+    callback clone-toggled(int);
     callback on-start-changed(bool);
     callback profiles(bool);
 
@@ -185,7 +189,7 @@ export component MonitorPanel inherits Rectangle {
                         width: root.box-width;
                         height: root.box-height;
                         for mon[i] in root.monitors: Rectangle {
-                            property <bool> active: root.index == i || root.index < 0;
+                            property <bool> active: root.index == i || (root.index < 0 && mon.cloned);
                             x: (parent.width - root.wide * root.scale * 1px) / 2 + mon.x * root.scale * 1px;
                             y: (parent.height - root.high * root.scale * 1px) / 2 + mon.y * root.scale * 1px;
                             width: mon.w * root.scale * 1px;
@@ -306,8 +310,15 @@ export component MonitorPanel inherits Rectangle {
                                     menu-width: 200px;
                                     entries: [
                                         { label: L.t("Remove Wallpaper", "Удалить обои"), icon: Icons.xmark, enabled: true, sub: -1, id: "remove" },
+                                        { label: L.t("Clone wallpaper here", "Клонировать обои сюда"), icon: Icons.copy, checked: mon.cloned, enabled: true, sub: -1, id: "clone" },
                                     ];
-                                    activated(id) => { root.cleared(i); }
+                                    activated(id) => {
+                                        if id == "clone" {
+                                            root.clone-toggled(i);
+                                        } else {
+                                            root.cleared(i);
+                                        }
+                                    }
                                 }
                             }
                             Rectangle {

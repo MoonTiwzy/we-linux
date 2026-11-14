@@ -813,6 +813,9 @@ fn describe_desktop(desktop: &Desktop) -> String {
     let mut own: Vec<_> = desktop.outputs.iter().collect();
     own.sort();
     parts.extend(own.into_iter().map(|(output, wallpaper)| format!("{output}: {}", describe(wallpaper))));
+    if !desktop.apart.is_empty() {
+        parts.push(format!("not cloned on {}", desktop.apart.join(", ")));
+    }
     parts.join("; ")
 }
 
@@ -986,13 +989,15 @@ pub fn ensure_daemon() -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// What a monitor is to show: the wallpaper of its own, else the wallpaper of all.
+/// What a monitor is to show: the wallpaper of its own, else the wallpaper of
+/// all, unless the monitor is kept apart from that one.
 fn wanted(desktop: &Desktop, monitor: &str) -> Option<PathBuf> {
+    let cloned = !desktop.apart.iter().any(|name| name == monitor);
     desktop
         .outputs
         .get(monitor)
         .filter(|p| p.is_dir())
-        .or(desktop.wallpaper.as_ref().filter(|p| p.is_dir()))
+        .or(desktop.wallpaper.as_ref().filter(|p| cloned && p.is_dir()))
         .cloned()
 }
 
@@ -1266,6 +1271,12 @@ pub fn run_daemon() {
     let mut settings_refused = false;
     // Monitors whose wallpaper is frozen under a fullscreen window.
     let mut frozen: HashMap<String, bool> = HashMap::new();
+    // The devices the running renderer was told (and their names, to take one
+    // away again), whether it refused them, and the picture each was told.
+    let mut devices_told: Option<String> = None;
+    let mut devices_known: Vec<String> = Vec::new();
+    let mut devices_refused = false;
+    let mut pictures_told: HashMap<String, String> = HashMap::new();
     unsafe {
         signal(SIGTERM, on_stop);
         signal(SIGINT, on_stop);
@@ -1285,6 +1296,7 @@ pub fn run_daemon() {
         }
         let desktop = Desktop::load();
         let settings = Settings::load();
+        let devices = desktop::devices();
         let live = desktop.wallpaper.as_ref().is_some_and(|p| p.is_dir())
             || desktop.outputs.values().any(|p| p.is_dir());
         // Nothing live any more: what was there before comes back.
@@ -1314,8 +1326,11 @@ pub fn run_daemon() {
         let playbacks: Vec<(String, Playback)> =
             covered.iter().map(|(name, over)| (name.clone(), under(&settings, *over, sound))).collect();
         // Every monitor is to stop: the renderer goes, and its memory with it.
-        let hidden =
-            !playbacks.is_empty() && playbacks.iter().all(|(_, playback)| *playback == Playback::Stop);
+        // A device is under no window: while one is on, the renderer stays for
+        // it, and the covered monitors are frozen instead.
+        let hidden = !playbacks.is_empty()
+            && playbacks.iter().all(|(_, playback)| *playback == Playback::Stop)
+            && !devices.iter().any(|device| device.enabled);
         // One monitor pausing all of them, one muting all of them.
         let pause_all = playbacks.iter().any(|(_, playback)| *playback == Playback::PauseAll);
         let muted = playbacks.iter().any(|(_, playback)| *playback == Playback::Mute)
@@ -1378,6 +1393,10 @@ pub fn run_daemon() {
                     frozen.clear();
                     RESTACK.store(false, std::sync::atomic::Ordering::Relaxed);
                     settings_told = Some(format!("{:?}", told(&settings, false)));
+                    // It knows no devices yet.
+                    devices_told = None;
+                    devices_known.clear();
+                    pictures_told.clear();
                 }
                 Err(e) => {
                     set_busy(None);
@@ -1414,6 +1433,59 @@ pub fn run_daemon() {
                 } else if !settings_refused {
                     log::warn("the renderer did not take the settings: they are told again on every round");
                     settings_refused = true;
+                }
+            }
+            // The devices: the renderer makes each an output of its own, which
+            // is then given its wallpaper like a monitor.
+            let now = format!("{devices:?}");
+            if devices_told.as_ref() != Some(&now) {
+                let mut all = true;
+                for name in devices_known.iter().filter(|name| !devices.iter().any(|d| &d.name == *name)) {
+                    all &= call(json!({ "cmd": "set", "path": format!("devices/{name}"), "value": null }))
+                        .is_ok();
+                }
+                for device in &devices {
+                    all &= call(
+                        json!({ "cmd": "set", "path": format!("devices/{}", device.name), "value": device.spec() }),
+                    )
+                    .is_ok();
+                }
+                if all {
+                    if !(devices.is_empty() && devices_known.is_empty()) {
+                        let said: Vec<String> = devices
+                            .iter()
+                            .map(|d| {
+                                format!(
+                                    "{} ({}x{}, {} fps{})",
+                                    d.name,
+                                    d.width,
+                                    d.height,
+                                    d.fps,
+                                    if d.enabled { "" } else { ", off" }
+                                )
+                            })
+                            .collect();
+                        log::info(if said.is_empty() {
+                            "the renderer is told there are no devices any more".to_owned()
+                        } else {
+                            format!("the renderer is told the devices: {}", said.join(", "))
+                        });
+                    }
+                    devices_known = devices.iter().map(|d| d.name.clone()).collect();
+                    devices_told = Some(now);
+                    devices_refused = false;
+                    pictures_told.clear();
+                    // Its outputs are there on its next round: so is ours.
+                    if !devices.is_empty()
+                        && let Some(wake) = WAKE.get()
+                    {
+                        let _ = wake.send(());
+                    }
+                } else if !devices_refused {
+                    log::warn(
+                        "the renderer did not take the devices: devices need wepaper 0.3 or newer (told again on every round)",
+                    );
+                    devices_refused = true;
                 }
             }
             // Each monitor gets what it is to show, when it shows something else.
@@ -1470,14 +1542,19 @@ pub fn run_daemon() {
                                     began.elapsed().as_secs_f32()
                                 ));
                                 frozen.remove(&monitor);
-                                // A video's alignment, as the user set it (else the setting).
-                                let fill = properties(&wallpaper)
-                                    .get("alignment")
-                                    .and_then(crate::props::fill_of)
-                                    .map_or(Value::Null, Value::from);
-                                let _ = call(
-                                    json!({ "cmd": "set", "path": format!("outputs/{monitor}/fill"), "value": fill }),
-                                );
+                                if devices.iter().any(|device| device.name == monitor) {
+                                    // A device's picture is the device's own: told below.
+                                    pictures_told.remove(&monitor);
+                                } else {
+                                    // A video's alignment, as the user set it (else the setting).
+                                    let fill = properties(&wallpaper)
+                                        .get("alignment")
+                                        .and_then(crate::props::fill_of)
+                                        .map_or(Value::Null, Value::from);
+                                    let _ = call(
+                                        json!({ "cmd": "set", "path": format!("outputs/{monitor}/fill"), "value": fill }),
+                                    );
+                                }
                             }
                             Err(_) if SILENT.get() => loading = Some(key),
                             Err(why) => {
@@ -1497,6 +1574,24 @@ pub fn run_daemon() {
                     None => {
                         log::info(format!("{monitor} has nothing to show: it is cleared"));
                         let _ = call(json!({ "cmd": "hide", "output": monitor }));
+                    }
+                }
+            }
+            // How each device shows its wallpaper (fill, zoom, shift): told when
+            // it changed, and again after a wallpaper was put on the device.
+            if !SILENT.get() {
+                let outputs: Vec<String> = outputs().into_iter().map(|(name, _, _)| name).collect();
+                for device in devices.iter().filter(|device| outputs.contains(&device.name)) {
+                    let now = format!("{:?}", device.picture());
+                    if pictures_told.get(&device.name) == Some(&now) {
+                        continue;
+                    }
+                    let all = device.picture().into_iter().all(|(key, value)| {
+                        call(json!({ "cmd": "set", "path": format!("outputs/{}/{key}", device.name), "value": value }))
+                            .is_ok()
+                    });
+                    if all {
+                        pictures_told.insert(device.name.clone(), now);
                     }
                 }
             }

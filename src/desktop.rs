@@ -55,6 +55,9 @@ pub struct Desktop {
     pub wallpaper: Option<PathBuf>,
     /// Monitors with a wallpaper of their own, by name.
     pub outputs: BTreeMap<String, PathBuf>,
+    /// Monitors the wallpaper of every monitor is not cloned on: each shows its
+    /// own, or nothing. A device starts out here.
+    pub apart: Vec<String>,
     /// The picture set last through us (a static wallpaper is not ours to keep).
     pub image: Option<PathBuf>,
 }
@@ -161,11 +164,15 @@ pub fn apply_to(output: &str, path: &Path) -> Result<(), String> {
     engine::ensure_daemon()
 }
 
-/// Forget the per-monitor wallpapers.
+/// Forget the per-monitor wallpapers. A device keeps its own: a wallpaper set
+/// for every monitor is set for the screens, and what was picked for a panel
+/// of another shape stays on it.
 pub fn clear_outputs() -> Result<(), String> {
     let mut desktop = Desktop::load();
-    if !desktop.outputs.is_empty() {
-        desktop.outputs.clear();
+    let devices: Vec<String> = devices().into_iter().map(|device| device.name).collect();
+    let before = desktop.outputs.len();
+    desktop.outputs.retain(|name, _| devices.contains(name));
+    if desktop.outputs.len() != before {
         desktop.save()?;
     }
     Ok(())
@@ -241,6 +248,129 @@ pub fn outputs() -> Vec<(String, PathBuf)> {
     Desktop::load().outputs.into_iter().collect()
 }
 
+/// A device: something that shows a wallpaper and is not a monitor (the panel
+/// on a cooler, a keyboard's screen, a stream). The renderer draws its wallpaper
+/// at the device's size and writes the frames to `command`'s standard input as
+/// raw RGB (the renderer's docs/devices.md). To the rest of the program it is one
+/// more monitor: it has a name, and a wallpaper of its own or the one of all.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(default)]
+pub struct Device {
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    /// Frames a second it is sent at most.
+    pub fps: u32,
+    /// The program the frames go to, run through `sh -c`.
+    pub command: String,
+    pub enabled: bool,
+    /// How a wallpaper of another shape fills it: "cover" (cropped), "contain"
+    /// (the whole picture, with bars) or "stretch".
+    pub fill: String,
+    /// Which part of the wallpaper it shows, on top of the fill. Enlarged about
+    /// the device's middle, in percent: 100 as the fill has it, 200 twice as
+    /// large, 50 half as large (more of the wallpaper, its background around it).
+    pub zoom: f32,
+    /// Moved right and up, in percent of the device's width and height. It is
+    /// the wallpaper that moves: what the fill cropped away comes into view.
+    pub shift_x: f32,
+    pub shift_y: f32,
+}
+
+/// How far a device's picture can be enlarged, shrunk and moved, in percent
+/// (the renderer's own limits).
+pub const ZOOM_RANGE: (f32, f32) = (5.0, 2000.0);
+pub const SHIFT_RANGE: (f32, f32) = (-2000.0, 2000.0);
+
+impl Default for Device {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            width: 480,
+            height: 480,
+            fps: 30,
+            command: String::new(),
+            enabled: true,
+            fill: "cover".into(),
+            zoom: 100.0,
+            shift_x: 0.0,
+            shift_y: 0.0,
+        }
+    }
+}
+
+impl Device {
+    /// Why it cannot be a device, if it cannot: the renderer would refuse it.
+    pub fn problem(&self) -> Option<String> {
+        let named = !self.name.is_empty()
+            && self.name.len() <= 64
+            && self.name != "*"
+            && self.name.chars().all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ' '));
+        if !named {
+            return Some(crate::tf!(
+                "a device's name is letters, digits, spaces, - _ and . (\"{}\" is not)",
+                "имя устройства: буквы, цифры, пробелы, - _ и . («{}» не подходит)",
+                self.name
+            ));
+        }
+        if !(1..=8192).contains(&self.width) || !(1..=8192).contains(&self.height) {
+            return Some(crate::tf!(
+                "{}: the size is from 1 to 8192 pixels a side",
+                "{}: размер от 1 до 8192 пикселей по стороне",
+                self.name
+            ));
+        }
+        if self.command.trim().is_empty() {
+            return Some(crate::tf!(
+                "{}: a device needs the command its frames go to",
+                "{}: устройству нужна команда, которой уходят кадры",
+                self.name
+            ));
+        }
+        None
+    }
+
+    /// As the renderer takes it (`devices/<name>`).
+    pub fn spec(&self) -> serde_json::Value {
+        serde_json::json!({
+            "size": [self.width, self.height],
+            "fps": self.fps.clamp(1, 240),
+            "exec": self.command,
+            "enabled": self.enabled,
+        })
+    }
+
+    /// Its picture, as the renderer takes it: the output's fill, and the zoom
+    /// and shifts of its look.
+    pub fn picture(&self) -> [(&'static str, serde_json::Value); 4] {
+        let fill =
+            if ["cover", "contain", "stretch"].contains(&self.fill.as_str()) { &self.fill } else { "cover" };
+        [
+            ("fill", serde_json::json!(fill)),
+            ("look/zoom", part(self.zoom, ZOOM_RANGE)),
+            ("look/shift_x", part(self.shift_x, SHIFT_RANGE)),
+            ("look/shift_y", part(self.shift_y, SHIFT_RANGE)),
+        ]
+    }
+}
+
+/// A percentage as the renderer takes it: a part of one, within `range`, to a
+/// ten-thousandth (what is told is compared with what was told before).
+fn part(percent: f32, range: (f32, f32)) -> serde_json::Value {
+    let percent = if percent.is_finite() { percent.clamp(range.0, range.1) } else { 100.0 };
+    serde_json::json!((f64::from(percent) * 100.0).round() / 10000.0)
+}
+
+/// The devices that are set up and can be: the ones the renderer is told.
+pub fn devices() -> Vec<Device> {
+    let mut seen = std::collections::BTreeSet::new();
+    Settings::load()
+        .devices
+        .into_iter()
+        .filter(|device| device.problem().is_none() && seen.insert(device.name.clone()))
+        .collect()
+}
+
 pub struct Monitor {
     pub name: String,
     /// Its size in pixels, as "2560x1440".
@@ -252,7 +382,9 @@ pub struct Monitor {
     pub height: f32,
 }
 
-pub fn monitors() -> Vec<Monitor> {
+/// The screens: the monitors of the compositor.
+pub fn screens() -> Vec<Monitor> {
+    let devices: Vec<String> = devices().into_iter().map(|device| device.name).collect();
     if let Some(monitors) = crate::compositor::current().monitors().filter(|m| !m.is_empty()) {
         return monitors
             .into_iter()
@@ -267,10 +399,12 @@ pub fn monitors() -> Vec<Monitor> {
             .collect();
     }
     // The compositor does not say: the renderer knows the monitors it draws
-    // on, not where they stand; they are put side by side.
+    // on, not where they stand; they are put side by side. (It lists the
+    // devices as outputs too: those are not screens.)
     let mut x = 0.0;
     engine::outputs()
         .into_iter()
+        .filter(|(name, _, _)| !devices.contains(name))
         .map(|(name, width, height)| {
             let monitor = Monitor {
                 name,
@@ -284,6 +418,75 @@ pub fn monitors() -> Vec<Monitor> {
             monitor
         })
         .collect()
+}
+
+/// Everything a wallpaper can be put on: the screens, then the devices that
+/// are on. A device stands to the right of the screens, drawn large enough to
+/// be picked whatever its own size is.
+pub fn monitors() -> Vec<Monitor> {
+    let mut monitors = screens();
+    let top = monitors.iter().map(|m| m.y).fold(f32::MAX, f32::min);
+    let tallest = monitors.iter().map(|m| m.height).fold(0.0, f32::max);
+    let (top, side) = if monitors.is_empty() { (0.0, 480.0) } else { (top, tallest * 0.6) };
+    let mut x = monitors.iter().map(|m| m.x + m.width).fold(0.0, f32::max);
+    for device in devices().into_iter().filter(|device| device.enabled) {
+        if monitors.iter().any(|m| m.name == device.name) {
+            continue;
+        }
+        let larger = device.width.max(device.height) as f32;
+        let (width, height) = (side * device.width as f32 / larger, side * device.height as f32 / larger);
+        x += side * 0.12;
+        monitors.push(Monitor {
+            detail: format!("{}x{}", device.width, device.height),
+            name: device.name,
+            x,
+            y: top,
+            width,
+            height,
+        });
+        x += width;
+    }
+    monitors
+}
+
+/// A device got another name: its own wallpaper, and whether it takes the
+/// wallpaper of every monitor, go on under the new one.
+pub fn rename_output(from: &str, to: &str) -> Result<(), String> {
+    let mut desktop = Desktop::load();
+    let before = desktop.clone();
+    if let Some(wallpaper) = desktop.outputs.remove(from) {
+        desktop.outputs.insert(to.to_owned(), wallpaper);
+    }
+    for name in desktop.apart.iter_mut().filter(|name| *name == from) {
+        *name = to.to_owned();
+    }
+    if desktop == before { Ok(()) } else { desktop.save() }
+}
+
+/// Whether the wallpaper of every monitor is cloned on this one.
+pub fn cloned(output: &str) -> bool {
+    !Desktop::load().apart.iter().any(|name| name == output)
+}
+
+/// Have the wallpaper of every monitor cloned on a monitor, or keep the monitor
+/// apart: it then shows its own wallpaper, or nothing.
+pub fn set_cloned(output: &str, cloned: bool) -> Result<(), String> {
+    let mut desktop = Desktop::load();
+    let before = desktop.clone();
+    desktop.apart.retain(|name| name != output);
+    if !cloned {
+        desktop.apart.push(output.to_owned());
+    }
+    if desktop == before { Ok(()) } else { desktop.save() }
+}
+
+/// A device that went: its own wallpaper and its place among the monitors go too.
+pub fn forget_output(output: &str) -> Result<(), String> {
+    let mut desktop = Desktop::load();
+    let before = desktop.clone();
+    desktop.outputs.remove(output);
+    desktop.apart.retain(|name| name != output);
+    if desktop == before { Ok(()) } else { desktop.save() }
 }
 
 /// Take a monitor's own wallpaper off: it shows what every monitor does.
@@ -408,6 +611,8 @@ pub struct Settings {
     /// A shell command run when the wallpaper changes, with WE_LINUX_WALLPAPER,
     /// WE_LINUX_STILL and WE_LINUX_TITLE in its environment.
     pub hook: String,
+    /// What shows a wallpaper and is not a monitor.
+    pub devices: Vec<Device>,
 }
 
 impl Default for Settings {
@@ -425,6 +630,7 @@ impl Default for Settings {
             texture_half: false,
             still: true,
             hook: String::new(),
+            devices: Vec::new(),
         }
     }
 }
@@ -628,4 +834,60 @@ pub fn open_steam(target: &str) -> Result<(), String> {
     let mut command = Command::new("steam");
     command.arg(target);
     quiet(command)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn panel() -> Device {
+        Device { name: "panel".into(), command: "send-frames".into(), ..Device::default() }
+    }
+
+    #[test]
+    fn a_device_is_told_to_the_renderer_as_it_takes_one() {
+        let device = Device { fps: 500, ..panel() };
+        assert_eq!(
+            device.spec(),
+            serde_json::json!({ "size": [480, 480], "fps": 240, "exec": "send-frames", "enabled": true })
+        );
+        let picture =
+            Device { fill: "contain".into(), zoom: 150.0, shift_x: -20.5, shift_y: 5000.0, ..panel() }
+                .picture();
+        assert_eq!(picture[0], ("fill", serde_json::json!("contain")));
+        assert_eq!(picture[1], ("look/zoom", serde_json::json!(1.5)));
+        assert_eq!(picture[2], ("look/shift_x", serde_json::json!(-0.205)));
+        assert_eq!(picture[3], ("look/shift_y", serde_json::json!(20.0)), "a shift has the renderer's limit");
+        let small = Device { zoom: 1.0, ..panel() }.picture();
+        assert_eq!(small[1].1, serde_json::json!(0.05), "and so has a zoom");
+        assert_eq!(Device { fill: "sideways".into(), ..panel() }.picture()[0].1, "cover");
+    }
+
+    #[test]
+    fn what_cannot_be_a_device_says_why() {
+        assert!(panel().problem().is_none());
+        for broken in [
+            Device { name: String::new(), ..panel() },
+            Device { name: "a/b".into(), ..panel() },
+            Device { name: "*".into(), ..panel() },
+            Device { width: 0, ..panel() },
+            Device { height: 9000, ..panel() },
+            Device { command: "  ".into(), ..panel() },
+        ] {
+            assert!(broken.problem().is_some(), "{broken:?}");
+        }
+    }
+
+    #[test]
+    fn settings_written_before_devices_still_load() {
+        let old: Settings = serde_json::from_str(r#"{"fps": 30, "hook": "true"}"#).unwrap();
+        assert!(old.devices.is_empty() && old.fps == 30);
+        let with: Settings =
+            serde_json::from_str(r#"{"devices": [{"name": "p", "command": "cat", "width": 64}]}"#).unwrap();
+        assert_eq!(
+            with.devices,
+            [Device { name: "p".into(), command: "cat".into(), width: 64, ..Device::default() }],
+            "what a device does not say is as a device comes"
+        );
+    }
 }
