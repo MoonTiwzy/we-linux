@@ -2,13 +2,17 @@
 # (Rendering a wallpaper needs Wallpaper Engine's own assets, which are not
 # ours to ship: that is checked by hand.)
 self:
-{ ... }:
+{ pkgs, ... }:
 {
   name = "we-linux";
 
   nodes.machine =
     { ... }:
     {
+      environment.systemPackages = [
+        pkgs.grim
+        pkgs.imagemagick
+      ];
       imports = [ self.nixosModules.default ];
       programs.we-linux = {
         enable = true;
@@ -56,5 +60,37 @@ self:
     tree = f"su alice -c '{session} swaymsg -s /run/user/1000/sway-ipc.*.sock -t get_tree'"
     machine.wait_until_succeeds(f"{tree} | grep -q '\"app_id\": \"we-linux\"'", timeout=90)
     machine.succeed(f"su alice -c '{session} we-linux status' | grep -q 'wallpaper: none'")
+
+    # A web wallpaper that plays sound, set for real: the renderer's web plugin
+    # draws it, and the browser's process stays up (without GStreamer's plugins
+    # in the package it ended as soon as the page played anything).
+    machine.succeed("systemctl stop window")
+    files = "/home/alice/.local/share/Steam/steamapps"
+    machine.succeed(f"mkdir -p {files}/common/wallpaper_engine/assets /home/alice/web")
+    machine.succeed("""cat > /home/alice/web/project.json <<'DOC'
+    { "type": "web", "file": "index.html", "title": "A green page that hums" }
+    DOC""")
+    machine.succeed("""cat > /home/alice/web/index.html <<'DOC'
+    <!doctype html>
+    <html><body style="margin:0;background:#00ff00">
+    <script>
+      const sound = new AudioContext();
+      const tone = sound.createOscillator();
+      tone.connect(sound.destination);
+      tone.start();
+    </script>
+    <audio autoplay loop src="data:audio/wav;base64,UklGRsQPAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YaAPAACAlKazuru0p5aBbVtNRURKVmh8kKOxuru2qpmFcV5PRkRIVGR4jaCvubu3rZyJdGFRR0RHUWF0iZytt7u5r6CNeGRUSERGT15xhZmqtru6saOQfGhWSkRFTVttgZantLu6s6aUf2tZTEVES1hpfpKksrq7tamXg29cTkVESVVmeo6hsLm7t6ubh3JfUEZESFJjdouerri8uK6ei3ZjUkhERlBfcoebq7e7ubChjnpmVUlERU5cb4OXqbW7urKkkn5pWEtERUxZa4CUprO6u7SnloFtW01FREpWaHyQo7G6u7aqmYVxXk9GREhUZHiNoK+5u7etnIl0YVFHREdRYXSJnK23u7mvoI14ZFRIREZPXnGFmaq2u7qxo5B8aFZKREVNW22Blqe0u7qzppSAa1lMRURLWGl+kqSyuru1qZeDb1xORURJVWZ6jqGwubu3q5uHcl9QRkRIUmN2i56uuLy4rp6LdmNSSERGUF9yh5urt7u5sKGOemZVSURFTlxvg5eptbu6sqSSfmlYS0RFTFlrgJSms7q7tKeWgW1bTUVESlZofJCjsbq7tqqZhXFeT0ZESFRkeI2gr7m7t62ciXRhUUdER1FhdImcrbe7ua+gjXhkVEhERk9ecYWZqra7urGjkHxoVkpERU1bbYGWp7S7urOmlH9rWUxFREtYaX6SpLK6u7Wpl4NvXE5FRElVZnqOobC5u7erm4dyX1BGREhSY3aLnq64vLiunot2Y1JIREZQX3KHm6u3u7mwoY56ZlVJREVOXG+Dl6m1u7qypJJ+aVhLREVMWWt/lKazuru0p5aBbVtNRURKVmh8kKOxuru2qpmFcV5PRkRIVGR4jaCvubu3rZyJdGFRR0RHUWF0iZytt7u5r6CNeGRUSERGT15xhZmqtru6saOQfGhWSkRFTVttgZantLu6s6aUf2tZTEVES1hpfpKksrq7tamXg29cTkVESVVmeo6hsLm7t6ubh3JfUEZESFJjdouerri8uK6ei3ZjUkhERlBfcoebq7e7ubChjnpmVUlERU5cb4OXqbW7urKkkn5pWEtERUxZa4CUprO6u7SnloFtW01FREpWaHyQo7G6u7aqmYVxXk9GREhUZHiNoK+5u7etnIl0YVFHREdRYXSJnK23u7mvoI14ZFRIREZPXnGFmaq2u7qxo5B8aFZKREVNW22Blqe0u7qzppR/a1lMRURLWGl+kqSyuru1qZeDb1xORURJVWZ6jqGwubu3q5uHcl9QRkRIUmN2i56uuLy4rp6LdmNSSERGUF9yh5urt7u5sKGOemZVSURFTlxvg5eptbu6sqSSfmlYS0RFTFlrgJSms7q7tKeWgW1bTUVESlZofJCjsbq7tqqZhXFeT0ZESFRkeI2gr7m7t62ciXRhUUdER1FhdImcrbe7ua+gjXhkVEhERk9ecYWZqra7urGjkHxoVkpERU1bbYGWp7S7urOmlH9rWUxFREtYaX6SpLK6u7Wpl4NvXE5FRElVZnqOobC5u7erm4dyX1BGREhSY3aLnq64vLiunot2Y1JIREZQX3KHm6u3u7mwoY56ZlVJREVOXG+Dl6m1u7qypJJ+aVhLREVMWWt/lKazuru0p5aBbVtNRURKVmh8kKOxuru2qpmFcV5PRkRIVGR4jaCvubu3rZyJdGFRR0RHUWF0iZytt7u5r6CNeGRUSERGT15xhZmqtru6saOQfGhWSkRFTVttgZantLu6s6aUgGtZTEVES1hpfpKksrq7tamXg29cTkVESVVmeo6hsLm7t6ubh3JfUEZESFJjdouerri8uK6ei3ZjUkhERlBfcoebq7e7ubChjnpmVUlERU5cb4OXqbW7urKkkn5pWEtERUxZa4CUprO6u7SnloFtW01FREpWaHyQo7G6u7aqmYVxXk9GREhUZHiNoK+5u7etnIl0YVFHREdRYXSJnK23u7mvoI14ZFRIREZPXnGFmaq2u7qxo5B8aFZKREVNW22Blqe0u7qzppR/a1lMRURLWGl+kqSyuru1qZeDb1xORURJVWZ6jqGwubu3q5uHcl9QRkRIUmN2i56uuLy4rp6LdmNSSERGUF9yh5urt7u5sKGOemZVSURFTlxvg5eptbu6sqSSfmlYS0RFTFlrgJSms7q7tKeWgW1bTUVESlZofJCjsbq7tqqZhXFeT0ZESFRkeI2gr7m7t62ciXRhUUdER1FhdImcrbe7ua+gjXhkVEhERk9ecYWZqra7urGjkHxoVkpERU1bbYGWp7S7urOmlH9rWUxFREtYaX6SpLK6u7Wpl4NvXE5FRElVZnqOobC5u7erm4dyX1BGREhSY3aLnq64vLiunot2Y1JIREZQX3KHm6u3u7mwoY56ZlVJREVOXG+Dl6m1u7qypJJ+aVhLREVMWWuAlKazuru0p5aBbVtNRURKVmh8kKOxuru2qpmFcV5PRkRIVGR4jaCvubu3rZyJdGFRR0RHUWF0iZytt7u5r6CNeGRUSERGT15xhZmqtru6saOQfGhWSkRFTVttgZantLu6s6aUf2tZTEVES1hpfpKksrq7tamXg29cTkVESVVmeo6hsLm7t6ubh3JfUEZESFJjdouerri8uK6ei3ZjUkhERlBfcoebq7e7ubChjnpmVUlERU5cb4OXqbW7urKkkn5pWEtERUxZa4CUprO6u7SnloFtW01FREpWaHyQo7G6u7aqmYVxXk9GREhUZHiNoK+5u7etnIl0YVFHREdRYXSJnK23u7mvoI14ZFRIREZPXnGFmaq2u7qxo5B8aFZKREVNW22Blqe0u7qzppR/a1lMRURLWGl+kqSyuru1qZeDb1xORURJVWZ6jqGwubu3q5uHcl9QRkRIUmN2i56uuLy4rp6LdmNSSERGUF9yh5urt7u5sKGOemZVSURFTlxvg5eptbu6sqSSfmlYS0RFTFlrgJSms7q7tKeWgW1bTUVESlZofJCjsbq7tqqZhXFeT0ZESFRkeI2gr7m7t62ciXRhUUdER1FhdImcrbe7ua+gjXhkVEhERk9ecYWZqra7urGjkHxoVkpERU1bbYGWp7S7urOmlH9rWUxFREtYaX6SpLK6u7Wpl4NvXE5FRElVZnqOobC5u7erm4dyX1BGREhSY3aLnq64vLiunot2Y1JIREZQX3KHm6u3u7mwoY56ZlVJREVOXG+Dl6m1u7qypJJ+aVhLREVMWWt/lKazuru0p5aBbVtNRURKVmh8kKOxuru2qpmFcV5PRkRIVGR4jaCvubu3rZyJdGFRR0RHUWF0iZytt7u5r6CNeGRUSERGT15xhZmqtru6saOQfGhWSkRFTVttgZantLu6s6aUf2tZTEVES1hpfpKksrq7tamXg29cTkVESVVmeo6hsLm7t6ubh3JfUEZESFJjdouerri8uK6ei3ZjUkhERlBfcoebq7e7ubChjnpmVUlERU5cb4OXqbW7urKkkn5pWEtERUxZa3+UprO6u7SnloFtW01FREpWaHyQo7G6u7aqmYVxXk9GREhUZHiNoK+5u7etnIl0YVFHREdRYXSJnK23u7mvoI14ZFRIREZPXnGFmaq2u7qxo5B8aFZKREVNW22Blqe0u7qzppSAa1lMRURLWGl+kqSyuru1qZeDb1xORURJVWZ6jqGwubu3q5uHcl9QRkRIUmN2i56uuLy4rp6LdmNSSERGUF9yh5urt7u5sKGOemZVSURFTlxvg5eptbu6sqSSfmlYS0RFTFlrgJSms7q7tKeWgW1bTUVESlZofJCjsbq7tqqZhXFeT0ZESFRkeI2gr7m7t62ciXRhUUdER1FhdImcrbe7ua+gjXhkVEhERk9ecYWZqra7urGjkHxoVkpERU1bbYGWp7S7urOmlIBrWUxFREtYaX6SpLK6u7Wpl4NvXE5FRElVZnqOobC5u7erm4dyX1BGREhSY3aLnq64vLiunot2Y1JIREZQX3KHm6u3u7mwoY56ZlVJREVOXG+Dl6m1u7qypJJ+aVhLREVMWWuAlKazuru0p5aBbVtNRURKVmh8kKOxuru2qpmFcV5PRkRIVGR4jaCvubu3rZyJdGFRR0RHUWF0iZytt7u5r6CNeGRUSERGT15xhZmqtru6saOQfGhWSkRFTVttgZantLu6s6aUf2tZTEVES1hpfpKksrq7tamXg29cTkVESVVmeo6hsLm7t6ubh3JfUEZESFJjdouerri8uK6ei3ZjUkhERlBfcoebq7e7ubChjnpmVUlERU5cb4OXqbW7urKkkn5pWEtERUxZa4CUprO6u7SnloFtW01FREpWaHyQo7G6u7aqmYVxXk9GREhUZHiNoK+5u7etnIl0YVFHREdRYXSJnK23u7mvoI14ZFRIREZPXnGFmaq2u7qxo5B8aFZKREVNW22Blqe0u7qzppR/a1lMRURLWGl+kqSyuru1qZeDb1xORURJVWZ6jqGwubu3q5uHcl9QRkRIUmN2i56uuLy4rp6LdmNSSERGUF9yh5urt7u5sKGOemZVSURFTlxvg5eptbu6sqSSfmlYS0RFTFlrgJSms7q7tKeWgW1bTUVESlZofJCjsbq7tqqZhXFeT0ZESFRkeI2gr7m7t62ciXRhUUdER1FhdImcrbe7ua+gjXhkVEhERk9ecYWZqra7urGjkHxoVkpERU1bbYGWp7S7urOmlIBrWUxFREtYaX6SpLK6u7Wpl4NvXE5FRElVZnqOobC5u7erm4dyX1BGREhSY3aLnq64vLiunot2Y1JIREZQX3KHm6u3u7mwoY56ZlVJREVOXG+Dl6m1u7qypJJ+aVhLREVMWWuAlKazuru0p5aBbVtNRURKVmh8kKOxuru2qpmFcV5PRkRIVGR4jaCvubu3rZyJdGFRR0RHUWF0iZytt7u5r6CNeGRUSERGT15xhZmqtru6saOQfGhWSkRFTVttgZantLu6s6aUf2tZTEVES1hpfpKksrq7tamXg29cTkVESVVmeo6hsLm7t6ubh3JfUEZESFJjdouerri8uK6ei3ZjUkhERlBfcoebq7e7ubChjnpmVUlERU5cb4OXqbW7urKkkn5pWEtERUxZa4CUprO6u7SnloFtW01FREpWaHyQo7G6u7aqmYVxXk9GREhUZHiNoK+5u7etnIl0YVFHREdRYXSJnK23u7mvoI14ZFRIREZPXnGFmaq2u7qxo5B8aFZKREVNW22Blqe0u7qzppR/a1lMRURLWGl+kqSyuru1qZeDb1xORURJVWZ6jqGwubu3q5uHcl9QRkRIUmN2i56uuLy4rp6LdmNSSERGUF9yh5urt7u5sKGOemZVSURFTlxvg5eptbu6sqSSfmlYS0RFTFlr"></audio>
+    </body></html>
+    DOC""")
+    machine.succeed("chown -R alice /home/alice")
+    machine.succeed(f"su alice -c '{session} we-linux apply /home/alice/web'")
+    machine.wait_until_succeeds(f"su alice -c '{session} we-linux status' | grep -q 'state: shown'", timeout=120)
+    # Long enough for a process that is going to end to have ended and come back.
+    machine.sleep(20)
+    print(machine.succeed(f"su alice -c '{session} we-linux logs' | tail -60"))
+    machine.fail("grep -q 'web process ended' /run/user/1000/we-linux/engine.log")
+    machine.succeed(f"su alice -c '{session} grim /tmp/desk.png'")
+    colour = machine.succeed("magick /tmp/desk.png -format '%[hex:p{200,200}]' info:").strip()
+    assert colour.upper().startswith("00FF00"), f"the page is not on the desktop: the pixel is {colour}"
   '';
 }
