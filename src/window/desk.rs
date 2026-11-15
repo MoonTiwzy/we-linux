@@ -230,9 +230,12 @@ impl App {
         let apart = desktop::Desktop::load().apart;
         let left = monitors.iter().map(|m| m.x).fold(f32::MAX, f32::min);
         let top = monitors.iter().map(|m| m.y).fold(f32::MAX, f32::min);
+        let devices = desktop::Settings::load().devices;
         let rows: Vec<MonitorEntry> = monitors
             .iter()
             .map(|m| MonitorEntry {
+                device: devices.iter().position(|d| d.name == m.name).map_or(-1, |i| i as i32),
+                round: devices.iter().any(|d| d.name == m.name && d.round()),
                 name: m.name.as_str().into(),
                 detail: m.detail.as_str().into(),
                 wallpaper: overrides

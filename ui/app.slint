@@ -62,10 +62,16 @@ export struct PlaylistEntry {
 component Dialog inherits Rectangle {
     in property <string> title;
     in property <length> panel-width: 520px;
+    /// A click beside the panel closes it.
+    in property <bool> outside-closes: true;
     callback closed;
     background: #00000099;
     TouchArea {
-        clicked => { root.closed(); }
+        clicked => {
+            if root.outside-closes {
+                root.closed();
+            }
+        }
     }
     Rectangle {
         x: (parent.width - self.width) / 2;
@@ -1859,6 +1865,7 @@ export component AppWindow inherits Window {
         picked(i) => { root.monitor-picked(i); }
         cleared(i) => { root.monitor-cleared(i); }
         clone-toggled(i) => { root.monitor-clone-toggled(i); }
+        device-edit(index) => { root.device-edit(index); }
         on-start-changed(on) => { root.monitors-on-start-changed(on); }
         backdrop: root.backdrop;
         covered: card-column.absolute-position.x - self.absolute-position.x;
@@ -1900,6 +1907,8 @@ export component AppWindow inherits Window {
     if root.device-editor-open: Dialog {
         title: root.device-editor.name;
         panel-width: 460px;
+        // A drag that ends beside the field would throw the edits away.
+        outside-closes: false;
         closed => { root.device-editor-cancel(); }
         DeviceEditor {
             device <=> root.device-editor;

@@ -22,6 +22,10 @@ export struct MonitorEntry {
     /// The wallpaper of every monitor is cloned on it (else it is apart: its
     /// own wallpaper, or none).
     cloned: bool,
+    /// A device: its row among the saved devices (-1 for a screen).
+    device: int,
+    /// A round device: its tile is drawn round.
+    round: bool,
 }
 
 export component MonitorPanel inherits Rectangle {
@@ -35,6 +39,8 @@ export component MonitorPanel inherits Rectangle {
     callback picked(int);
     callback cleared(int);
     callback clone-toggled(int);
+    /// A device's tile was clicked: its editor opens (the saved device's row).
+    callback device-edit(int);
     callback on-start-changed(bool);
     callback profiles(bool);
 
@@ -194,7 +200,7 @@ export component MonitorPanel inherits Rectangle {
                             y: (parent.height - root.high * root.scale * 1px) / 2 + mon.y * root.scale * 1px;
                             width: mon.w * root.scale * 1px;
                             height: mon.h * root.scale * 1px;
-                            border-radius: 4px;
+                            border-radius: mon.round ? min(self.width, self.height) / 2 : 4px;
                             background: mon.has-image ? #333333 : #e7e7e7;
                             clip: true;
                             if mon.has-image: Image {
@@ -249,15 +255,23 @@ export component MonitorPanel inherits Rectangle {
                                     overflow: elide;
                                 }
                             }
+                            // A device opens its editor as well, and the panel stays.
                             mta := TouchArea {
                                 clicked => {
                                     root.index = i;
                                     root.picked(i);
+                                    if mon.device >= 0 {
+                                        root.device-edit(mon.device);
+                                    }
                                 }
                                 double-clicked => {
                                     root.index = i;
                                     root.picked(i);
-                                    root.open = false;
+                                    if mon.device >= 0 {
+                                        root.device-edit(mon.device);
+                                    } else {
+                                        root.open = false;
+                                    }
                                 }
                             }
                             // The monitor's sound: the renderer has one volume for all.
@@ -322,7 +336,7 @@ export component MonitorPanel inherits Rectangle {
                                 }
                             }
                             Rectangle {
-                                border-radius: 4px;
+                                border-radius: parent.border-radius;
                                 border-width: parent.active ? 3px : 2px;
                                 border-color: parent.active ? Theme.primary : mta.has-hover ? #9999bb : #111111;
                             }
