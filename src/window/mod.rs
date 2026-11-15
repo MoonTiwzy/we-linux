@@ -38,6 +38,7 @@ mod debug;
 mod desk;
 mod details;
 mod filters;
+mod framing;
 mod grid;
 mod listing;
 mod menu;
