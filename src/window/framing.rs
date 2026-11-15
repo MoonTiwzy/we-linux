@@ -16,8 +16,9 @@ use crate::desktop::{self, Device};
 pub const WIDE: f32 = 2.0;
 /// The zoom the editor allows, wheel and slider alike, in percent.
 pub const ZOOM: (f32, f32) = (10.0, 500.0);
-/// What the wheel reports for one notch: one notch is 10 % more or less.
-pub const NOTCH: f32 = 15.0;
+/// What the wheel reports for one notch (Slint gives a wheel's line as 60
+/// pixels): one notch is 10 % more or less, a touchpad's pixels in proportion.
+pub const NOTCH: f32 = 60.0;
 
 /// A device's look in percent, as `Device` has it.
 #[derive(Clone, Copy, PartialEq, Debug)]

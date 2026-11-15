@@ -36,226 +36,239 @@ export component DeviceEditor inherits VerticalLayout {
     callback cancel();
     spacing: 6px;
 
-    Row {
-        label: L.t("Shape:", "Форма:");
-        hint: L.t("The shape of the device's screen: what is outside a round one is not seen.", "Форма экрана устройства: на круглом не видно того, что за кругом.");
-        Btn {
-            horizontal-stretch: 1;
-            kind: root.device.shape == 0 ? 1 : 0;
-            font-size: 12.6px;
-            text: L.t("Rectangle", "Прямоугольник");
-            clicked => {
-                root.device.shape = 0;
-                root.edited();
-            }
-        }
-        Btn {
-            horizontal-stretch: 1;
-            kind: root.device.shape == 1 ? 1 : 0;
-            font-size: 12.6px;
-            text: L.t("Circle", "Круг");
-            clicked => {
-                root.device.shape = 1;
-                root.edited();
-            }
-        }
-    }
-    Row {
-        label: L.t("Fill:", "Заполнение:");
-        hint: L.t("How a wallpaper of another shape fills the device: cropped to cover it, whole with bars, or stretched.", "Как обои другой формы заполняют устройство: обрезаются, чтобы закрыть его целиком, помещаются целиком с полями или растягиваются.");
-        Pick {
-            horizontal-stretch: 1;
-            options: [L.t("Cover (crop)", "Заполнить (обрезать)"), L.t("Fit (whole picture)", "Вписать (целиком)"), L.t("Stretch", "Растянуть")];
-            index: root.device.fill;
-            selected(n) => {
-                root.device.fill = n;
-                root.edited();
-            }
-        }
-    }
-
     HorizontalLayout {
-        alignment: center;
-        padding-top: 6px;
-        field := Rectangle {
-            property <float> aspect: max(1, root.device.width) / max(1, root.device.height);
-            // The device's window in the middle.
-            property <length> win-w: self.width / max(1, root.view.wide);
-            property <length> win-h: self.height / max(1, root.view.wide);
-            property <length> win-x: (self.width - self.win-w) / 2;
-            property <length> win-y: (self.height - self.win-h) / 2;
-            width: self.aspect >= 1 ? 360px : 360px * self.aspect;
-            height: self.aspect >= 1 ? 360px / self.aspect : 360px;
-            background: #000000;
-            clip: true;
-            if root.shown: Image {
-                width: parent.width * root.view.scale;
-                height: parent.height * root.view.scale;
-                x: (parent.width - self.width) / 2 + parent.width * root.view.x;
-                y: (parent.height - self.height) / 2 + parent.height * root.view.y;
-                source: root.shot;
-                image-fit: fill;
-            }
-            // Outside the window, darkened: four bands around a rectangle...
-            if root.device.shape == 0: Rectangle {
-                Rectangle { x: 0; y: 0; width: field.width; height: field.win-y; background: #000000aa; }
-                Rectangle { x: 0; y: field.win-y + field.win-h; width: field.width; height: field.height - field.win-y - field.win-h; background: #000000aa; }
-                Rectangle { x: 0; y: field.win-y; width: field.win-x; height: field.win-h; background: #000000aa; }
-                Rectangle { x: field.win-x + field.win-w; y: field.win-y; width: field.width - field.win-x - field.win-w; height: field.win-h; background: #000000aa; }
-                Rectangle {
-                    x: field.win-x;
-                    y: field.win-y;
-                    width: field.win-w;
-                    height: field.win-h;
-                    border-width: 1px;
-                    border-color: Theme.primary;
+        spacing: 18px;
+        // The settings at the left, the field at the right: it fits a low window.
+        VerticalLayout {
+            width: 330px;
+            alignment: start;
+            spacing: 6px;
+            Row {
+                label: L.t("Shape:", "Форма:");
+                hint: L.t("The shape of the device's screen: what is outside a round one is not seen.", "Форма экрана устройства: на круглом не видно того, что за кругом.");
+                Btn {
+                    horizontal-stretch: 1;
+                    kind: root.device.shape == 0 ? 1 : 0;
+                    font-size: 12.6px;
+                    text: L.t("Rectangle", "Прямоугольник");
+                    clicked => {
+                        root.device.shape = 0;
+                        root.edited();
+                    }
+                }
+                Btn {
+                    horizontal-stretch: 1;
+                    kind: root.device.shape == 1 ? 1 : 0;
+                    font-size: 12.6px;
+                    text: L.t("Circle", "Круг");
+                    clicked => {
+                        root.device.shape = 1;
+                        root.edited();
+                    }
                 }
             }
-            // ...or the field with the ellipse inside the window cut out.
-            if root.device.shape == 1: Rectangle {
-                property <float> w: field.width / 1px;
-                property <float> h: field.height / 1px;
-                property <float> rx: field.win-w / 2px;
-                property <float> ry: field.win-h / 2px;
-                property <float> cx: self.w / 2;
-                property <float> cy: self.h / 2;
-                property <string> ellipse: "M " + (self.cx - self.rx) + " " + self.cy + " A " + self.rx + " " + self.ry + " 0 1 0 " + (self.cx + self.rx) + " " + self.cy + " A " + self.rx + " " + self.ry + " 0 1 0 " + (self.cx - self.rx) + " " + self.cy + " Z";
-                Path {
-                    width: field.width;
-                    height: field.height;
-                    viewbox-width: parent.w;
-                    viewbox-height: parent.h;
-                    fill-rule: evenodd;
-                    fill: #000000aa;
-                    commands: "M 0 0 L " + parent.w + " 0 L " + parent.w + " " + parent.h + " L 0 " + parent.h + " Z " + parent.ellipse;
-                }
-                Path {
-                    width: field.width;
-                    height: field.height;
-                    viewbox-width: parent.w;
-                    viewbox-height: parent.h;
-                    stroke: Theme.primary;
-                    stroke-width: 1px;
-                    commands: parent.ellipse;
+            Row {
+                label: L.t("Fill:", "Заполнение:");
+                hint: L.t("How a wallpaper of another shape fills the device: cropped to cover it, whole with bars, or stretched.", "Как обои другой формы заполняют устройство: обрезаются, чтобы закрыть его целиком, помещаются целиком с полями или растягиваются.");
+                Pick {
+                    horizontal-stretch: 1;
+                    options: [L.t("Cover (crop)", "Заполнить (обрезать)"), L.t("Fit (whole picture)", "Вписать (целиком)"), L.t("Stretch", "Растянуть")];
+                    index: root.device.fill;
+                    selected(n) => {
+                        root.device.fill = n;
+                        root.edited();
+                    }
                 }
             }
-            if !root.shown: Text {
-                x: 16px;
-                width: parent.width - 32px;
-                height: parent.height;
-                text: L.t("The device's picture shows here once the device has a wallpaper.", "Картинка устройства появится здесь, когда на нём будут обои.");
+
+            Row {
+                label: L.t("Zoom:", "Увеличение:");
+                hint: L.t("100% is as the fill has it. More enlarges the wallpaper about the device's middle, less shows more of it, with the wallpaper's background around.", "100% это как задаёт заполнение. Больше: обои крупнее от середины устройства, меньше: видно больше обоев, вокруг их фон.");
+                Rail {
+                    horizontal-stretch: 1;
+                    minimum: 10;
+                    maximum: 500;
+                    value: root.device.zoom;
+                    changed(v) => {
+                        root.device.zoom = round(v);
+                        root.edited();
+                    }
+                }
+                Text {
+                    width: 46px;
+                    text: round(root.device.zoom) + "%";
+                    color: Theme.text;
+                    font-size: 12.6px;
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                }
+            }
+            Row {
+                label: L.t("Shift right:", "Сдвиг вправо:");
+                hint: L.t("The wallpaper moved, in percent of the device's width: what the fill cropped away comes into view.", "Обои сдвигаются, в процентах от ширины устройства: показывается то, что обрезало заполнение.");
+                Rail {
+                    horizontal-stretch: 1;
+                    minimum: -300;
+                    maximum: 300;
+                    value: root.device.shift-x;
+                    changed(v) => {
+                        root.device.shift-x = round(v);
+                        root.edited();
+                    }
+                }
+                Text {
+                    width: 46px;
+                    text: round(root.device.shift-x) + "%";
+                    color: Theme.text;
+                    font-size: 12.6px;
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                }
+            }
+            Row {
+                label: L.t("Shift up:", "Сдвиг вверх:");
+                hint: L.t("The wallpaper moved, in percent of the device's height.", "Обои сдвигаются, в процентах от высоты устройства.");
+                Rail {
+                    horizontal-stretch: 1;
+                    minimum: -300;
+                    maximum: 300;
+                    value: root.device.shift-y;
+                    changed(v) => {
+                        root.device.shift-y = round(v);
+                        root.edited();
+                    }
+                }
+                Text {
+                    width: 46px;
+                    text: round(root.device.shift-y) + "%";
+                    color: Theme.text;
+                    font-size: 12.6px;
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                }
+            }
+            Row {
+                label: L.t("Position:", "Позиция:");
+                Btn {
+                    horizontal-stretch: 1;
+                    kind: 1;
+                    font-size: 12.6px;
+                    text: L.t("RESET", "СБРОСИТЬ");
+                    clicked => {
+                        root.device.zoom = 100;
+                        root.device.shift-x = 0;
+                        root.device.shift-y = 0;
+                        root.edited();
+                    }
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: start;
+            spacing: 6px;
+            HorizontalLayout {
+                alignment: center;
+                field := Rectangle {
+                    property <float> aspect: max(1, root.device.width) / max(1, root.device.height);
+                    // The device's window in the middle.
+                    property <length> win-w: self.width / max(1, root.view.wide);
+                    property <length> win-h: self.height / max(1, root.view.wide);
+                    property <length> win-x: (self.width - self.win-w) / 2;
+                    property <length> win-y: (self.height - self.win-h) / 2;
+                    width: self.aspect >= 1 ? 360px : 360px * self.aspect;
+                    height: self.aspect >= 1 ? 360px / self.aspect : 360px;
+                    background: #000000;
+                    clip: true;
+                    if root.shown: Image {
+                        width: parent.width * root.view.scale;
+                        height: parent.height * root.view.scale;
+                        x: (parent.width - self.width) / 2 + parent.width * root.view.x;
+                        y: (parent.height - self.height) / 2 + parent.height * root.view.y;
+                        source: root.shot;
+                        image-fit: fill;
+                    }
+                    // Outside the window, darkened: four bands around a rectangle...
+                    if root.device.shape == 0: Rectangle {
+                        Rectangle { x: 0; y: 0; width: field.width; height: field.win-y; background: #000000aa; }
+                        Rectangle { x: 0; y: field.win-y + field.win-h; width: field.width; height: field.height - field.win-y - field.win-h; background: #000000aa; }
+                        Rectangle { x: 0; y: field.win-y; width: field.win-x; height: field.win-h; background: #000000aa; }
+                        Rectangle { x: field.win-x + field.win-w; y: field.win-y; width: field.width - field.win-x - field.win-w; height: field.win-h; background: #000000aa; }
+                        Rectangle {
+                            x: field.win-x;
+                            y: field.win-y;
+                            width: field.win-w;
+                            height: field.win-h;
+                            border-width: 1px;
+                            border-color: Theme.primary;
+                        }
+                    }
+                    // ...or the field with the ellipse inside the window cut out.
+                    if root.device.shape == 1: Rectangle {
+                        property <float> w: field.width / 1px;
+                        property <float> h: field.height / 1px;
+                        property <float> rx: field.win-w / 2px;
+                        property <float> ry: field.win-h / 2px;
+                        property <float> cx: self.w / 2;
+                        property <float> cy: self.h / 2;
+                        property <string> ellipse: "M " + (self.cx - self.rx) + " " + self.cy + " A " + self.rx + " " + self.ry + " 0 1 0 " + (self.cx + self.rx) + " " + self.cy + " A " + self.rx + " " + self.ry + " 0 1 0 " + (self.cx - self.rx) + " " + self.cy + " Z";
+                        Path {
+                            width: field.width;
+                            height: field.height;
+                            viewbox-width: parent.w;
+                            viewbox-height: parent.h;
+                            fill-rule: evenodd;
+                            fill: #000000aa;
+                            commands: "M 0 0 L " + parent.w + " 0 L " + parent.w + " " + parent.h + " L 0 " + parent.h + " Z " + parent.ellipse;
+                        }
+                        Path {
+                            width: field.width;
+                            height: field.height;
+                            viewbox-width: parent.w;
+                            viewbox-height: parent.h;
+                            stroke: Theme.primary;
+                            stroke-width: 1px;
+                            commands: parent.ellipse;
+                        }
+                    }
+                    if !root.shown: Text {
+                        x: 16px;
+                        width: parent.width - 32px;
+                        height: parent.height;
+                        text: L.t("The device's picture shows here once the device has a wallpaper.", "Картинка устройства появится здесь, когда на нём будут обои.");
+                        color: Theme.faint;
+                        font-size: 11.2px;
+                        wrap: word-wrap;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    TouchArea {
+                        mouse-cursor: self.pressed ? MouseCursor.grabbing : MouseCursor.grab;
+                        pointer-event(event) => {
+                            if event.kind == PointerEventKind.down {
+                                root.drag-start();
+                            }
+                        }
+                        moved => {
+                            if self.pressed {
+                                root.drag((self.mouse-x - self.pressed-x) / self.width, (self.mouse-y - self.pressed-y) / self.height);
+                            }
+                        }
+                        scroll-event(event) => {
+                            root.wheel(self.mouse-x / self.width, self.mouse-y / self.height, event.delta-y / 1px);
+                            return accept;
+                        }
+                    }
+                }
+            }
+            Text {
+                width: 360px;
+                text: L.t("Drag the picture to move it, turn the wheel over it to zoom.", "Тяни картинку, чтобы подвинуть, крути колесо над ней, чтобы приблизить или отдалить.");
                 color: Theme.faint;
                 font-size: 11.2px;
-                wrap: word-wrap;
                 horizontal-alignment: center;
-                vertical-alignment: center;
+                wrap: word-wrap;
             }
-            TouchArea {
-                mouse-cursor: self.pressed ? MouseCursor.grabbing : MouseCursor.grab;
-                pointer-event(event) => {
-                    if event.kind == PointerEventKind.down {
-                        root.drag-start();
-                    }
-                }
-                moved => {
-                    if self.pressed {
-                        root.drag((self.mouse-x - self.pressed-x) / self.width, (self.mouse-y - self.pressed-y) / self.height);
-                    }
-                }
-                scroll-event(event) => {
-                    root.wheel(self.mouse-x / self.width, self.mouse-y / self.height, event.delta-y / 1px);
-                    return accept;
-                }
-            }
-        }
-    }
-    Text {
-        text: L.t("Drag the picture to move it, turn the wheel over it to zoom.", "Тяни картинку, чтобы подвинуть, крути колесо над ней, чтобы приблизить или отдалить.");
-        color: Theme.faint;
-        font-size: 11.2px;
-        horizontal-alignment: center;
-        wrap: word-wrap;
-    }
 
-    Row {
-        label: L.t("Zoom:", "Увеличение:");
-        hint: L.t("100% is as the fill has it. More enlarges the wallpaper about the device's middle, less shows more of it, with the wallpaper's background around.", "100% это как задаёт заполнение. Больше: обои крупнее от середины устройства, меньше: видно больше обоев, вокруг их фон.");
-        Rail {
-            horizontal-stretch: 1;
-            minimum: 10;
-            maximum: 500;
-            value: root.device.zoom;
-            changed(v) => {
-                root.device.zoom = round(v);
-                root.edited();
-            }
-        }
-        Text {
-            width: 46px;
-            text: round(root.device.zoom) + "%";
-            color: Theme.text;
-            font-size: 12.6px;
-            vertical-alignment: center;
-            horizontal-alignment: right;
-        }
-    }
-    Row {
-        label: L.t("Shift right:", "Сдвиг вправо:");
-        hint: L.t("The wallpaper moved, in percent of the device's width: what the fill cropped away comes into view.", "Обои сдвигаются, в процентах от ширины устройства: показывается то, что обрезало заполнение.");
-        Rail {
-            horizontal-stretch: 1;
-            minimum: -300;
-            maximum: 300;
-            value: root.device.shift-x;
-            changed(v) => {
-                root.device.shift-x = round(v);
-                root.edited();
-            }
-        }
-        Text {
-            width: 46px;
-            text: round(root.device.shift-x) + "%";
-            color: Theme.text;
-            font-size: 12.6px;
-            vertical-alignment: center;
-            horizontal-alignment: right;
-        }
-    }
-    Row {
-        label: L.t("Shift up:", "Сдвиг вверх:");
-        hint: L.t("The wallpaper moved, in percent of the device's height.", "Обои сдвигаются, в процентах от высоты устройства.");
-        Rail {
-            horizontal-stretch: 1;
-            minimum: -300;
-            maximum: 300;
-            value: root.device.shift-y;
-            changed(v) => {
-                root.device.shift-y = round(v);
-                root.edited();
-            }
-        }
-        Text {
-            width: 46px;
-            text: round(root.device.shift-y) + "%";
-            color: Theme.text;
-            font-size: 12.6px;
-            vertical-alignment: center;
-            horizontal-alignment: right;
-        }
-    }
-    Row {
-        label: L.t("Position:", "Позиция:");
-        Btn {
-            horizontal-stretch: 1;
-            kind: 1;
-            font-size: 12.6px;
-            text: L.t("RESET", "СБРОСИТЬ");
-            clicked => {
-                root.device.zoom = 100;
-                root.device.shift-x = 0;
-                root.device.shift-y = 0;
-                root.edited();
-            }
         }
     }
     Rectangle { height: 8px; }

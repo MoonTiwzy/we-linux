@@ -209,10 +209,10 @@ export component MonitorPanel inherits Rectangle {
                                 source: mon.image;
                                 image-fit: cover;
                             }
-                            // Its size and name, in the corner.
+                            // Its size and name, in the corner (inside a round tile, at the top).
                             Rectangle {
-                                x: 3px;
-                                y: 3px;
+                                x: mon.round ? (parent.width - self.width) / 2 : 3px;
+                                y: mon.round ? parent.height * 0.18 : 3px;
                                 width: size.preferred-width + 2px;
                                 height: 14px;
                                 background: #444444;
@@ -240,7 +240,8 @@ export component MonitorPanel inherits Rectangle {
                                     vertical-alignment: center;
                                 }
                             }
-                            if mon.wallpaper != "": Rectangle {
+                            // A round tile is small: its name, its number and its menu only.
+                            if mon.wallpaper != "" && !mon.round: Rectangle {
                                 y: parent.height - self.height - 3px;
                                 x: 32px;
                                 width: parent.width - 58px;
@@ -275,7 +276,7 @@ export component MonitorPanel inherits Rectangle {
                                 }
                             }
                             // The monitor's sound: the renderer has one volume for all.
-                            Rectangle {
+                            if !mon.round: Rectangle {
                                 x: 3px;
                                 y: parent.height - self.height - 3px;
                                 width: 28px;
@@ -301,10 +302,11 @@ export component MonitorPanel inherits Rectangle {
                                     }
                                 }
                             }
-                            // What the monitor has, at the bottom right.
+                            // What the monitor has, at the bottom right (of a round tile: the middle).
                             Rectangle {
-                                x: parent.width - self.width - 3px;
-                                y: parent.height - self.height - 3px;
+                                // On a round tile: on the circle's inner edge, down to the right.
+                                x: mon.round ? parent.width * 0.85 - self.width : parent.width - self.width - 3px;
+                                y: mon.round ? parent.height * 0.85 - self.height : parent.height - self.height - 3px;
                                 width: 20px;
                                 height: 24px;
                                 background: menu.has-hover ? #222222 : #444444;

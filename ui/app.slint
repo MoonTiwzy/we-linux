@@ -1906,7 +1906,7 @@ export component AppWindow inherits Window {
     // Over the settings and "Choose monitor", which it opens from.
     if root.device-editor-open: Dialog {
         title: root.device-editor.name;
-        panel-width: 460px;
+        panel-width: 760px;
         // A drag that ends beside the field would throw the edits away.
         outside-closes: false;
         closed => { root.device-editor-cancel(); }
