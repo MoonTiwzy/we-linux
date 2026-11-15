@@ -275,6 +275,10 @@ pub struct Device {
     /// the wallpaper that moves: what the fill cropped away comes into view.
     pub shift_x: f32,
     pub shift_y: f32,
+    /// "rect", or "circle" for a round panel: the ellipse inside its rectangle.
+    /// It is how the editor and the monitor chooser draw the device; the frames
+    /// it is sent are whole.
+    pub shape: String,
 }
 
 /// How far a device's picture can be enlarged, shrunk and moved, in percent
@@ -295,11 +299,29 @@ impl Default for Device {
             zoom: 100.0,
             shift_x: 0.0,
             shift_y: 0.0,
+            shape: "rect".into(),
         }
     }
 }
 
 impl Device {
+    /// Round: the device shows only the ellipse inside its rectangle.
+    pub fn round(&self) -> bool {
+        self.shape == "circle"
+    }
+
+    /// This device with the picture of `from`: its fill, zoom, shifts and shape.
+    pub fn with_picture(self, from: &Device) -> Device {
+        Device {
+            fill: from.fill.clone(),
+            zoom: from.zoom,
+            shift_x: from.shift_x,
+            shift_y: from.shift_y,
+            shape: from.shape.clone(),
+            ..self
+        }
+    }
+
     /// Why it cannot be a device, if it cannot: the renderer would refuse it.
     pub fn problem(&self) -> Option<String> {
         let named = !self.name.is_empty()
@@ -876,6 +898,34 @@ mod tests {
         ] {
             assert!(broken.problem().is_some(), "{broken:?}");
         }
+    }
+
+    #[test]
+    fn shape_defaults_to_rect() {
+        let device: Device = serde_json::from_str(r#"{"name": "p", "command": "c"}"#).unwrap();
+        assert_eq!(device.shape, "rect");
+        assert!(!device.round());
+        assert!(Device { shape: "circle".into(), ..panel() }.round());
+        assert!(!Device { shape: "oval".into(), ..panel() }.round(), "an unknown shape reads as rect");
+    }
+
+    #[test]
+    fn with_picture_takes_only_the_picture() {
+        let a = Device { name: "a".into(), zoom: 100.0, ..panel() };
+        let b = Device {
+            name: "b".into(),
+            fps: 60,
+            zoom: 145.0,
+            shift_x: 30.0,
+            shift_y: -10.0,
+            fill: "contain".into(),
+            shape: "circle".into(),
+            ..panel()
+        };
+        let mixed = a.with_picture(&b);
+        assert_eq!((mixed.name.as_str(), mixed.fps), ("a", 30));
+        assert_eq!((mixed.zoom, mixed.shift_x, mixed.shift_y), (145.0, 30.0, -10.0));
+        assert_eq!((mixed.fill.as_str(), mixed.shape.as_str()), ("contain", "circle"));
     }
 
     #[test]

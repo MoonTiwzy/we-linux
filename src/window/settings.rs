@@ -61,6 +61,7 @@ fn playback_choices(row: Row, several: bool) -> Vec<&'static str> {
 }
 
 const FILLS: [&str; 3] = ["cover", "contain", "stretch"];
+const SHAPES: [&str; 2] = ["rect", "circle"];
 
 /// What the devices' editor asks of the renderer while it is open: a picture
 /// to show at once, a look at what a device shows.
@@ -128,6 +129,7 @@ fn device_entry(device: &Device) -> DeviceEntry {
         zoom: device.zoom,
         shift_x: device.shift_x,
         shift_y: device.shift_y,
+        shape: i32::from(device.round()),
     }
 }
 
@@ -144,6 +146,7 @@ fn device_of(entry: &DeviceEntry) -> Device {
         zoom: entry.zoom.clamp(desktop::ZOOM_RANGE.0, desktop::ZOOM_RANGE.1),
         shift_x: entry.shift_x.clamp(desktop::SHIFT_RANGE.0, desktop::SHIFT_RANGE.1),
         shift_y: entry.shift_y.clamp(desktop::SHIFT_RANGE.0, desktop::SHIFT_RANGE.1),
+        shape: SHAPES[entry.shape.clamp(0, 1) as usize].to_owned(),
     }
 }
 
@@ -471,6 +474,20 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_device_row_keeps_the_shape() {
+        let round = Device {
+            name: "panel".into(),
+            command: "send-frames".into(),
+            shape: "circle".into(),
+            zoom: 145.0,
+            ..Device::default()
+        };
+        assert_eq!(device_of(&device_entry(&round)), round);
+        let plain = Device { shape: "rect".into(), ..round.clone() };
+        assert_eq!(device_of(&device_entry(&plain)), plain);
+    }
 
     #[test]
     fn playback_rows_have_the_original_choices() {

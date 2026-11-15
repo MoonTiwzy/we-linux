@@ -40,7 +40,8 @@ we-linux device set NAME KEY VALUE
                                   fill (cover|contain|stretch), and the part of
                                   the wallpaper it shows: zoom (percent, 100 as
                                   the fill has it, 5 to 2000), shift_x, shift_y
-                                  (percent of the device, right and up)
+                                  (percent of the device, right and up), shape
+                                  (rect, or circle for a round panel)
 we-linux device remove NAME
 we-linux daemon                   keep the wallpaper on the desktop: run it
                                   when the session starts (the window and
@@ -156,11 +157,12 @@ pub fn run() -> Option<i32> {
                     },
                 };
                 say!(
-                    "{}: {}x{}, {} fps, fill {}, zoom {}%, shift {} {}, `{}`: {state}",
+                    "{}: {}x{}, {} fps, {}, fill {}, zoom {}%, shift {} {}, `{}`: {state}",
                     device.name,
                     device.width,
                     device.height,
                     device.fps,
+                    device.shape,
                     device.fill,
                     device.zoom,
                     device.shift_x,
@@ -259,9 +261,11 @@ pub fn run() -> Option<i32> {
                         "zoom" => device.zoom = percent(desktop::ZOOM_RANGE)?,
                         "shift_x" => device.shift_x = percent(desktop::SHIFT_RANGE)?,
                         "shift_y" => device.shift_y = percent(desktop::SHIFT_RANGE)?,
+                        "shape" if ["rect", "circle"].contains(value) => device.shape = (*value).to_owned(),
+                        "shape" => return Err("shape takes rect or circle".to_owned()),
                         _ => {
                             return Err(format!(
-                                "a device has no {key}: name, size, fps, command, enabled, fill, zoom, shift_x, shift_y"
+                                "a device has no {key}: name, size, fps, command, enabled, fill, zoom, shift_x, shift_y, shape"
                             ));
                         }
                     }
