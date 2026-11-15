@@ -307,9 +307,10 @@ we-linux device set panel shift_x -40              # percent of the device, righ
 we-linux devices                                   # is it running, how many frames went
 ```
 
-Web wallpapers play on a device too (their plugin draws the page at the device's size and
-sends the frames itself; the fill, zoom and shifts are not for them: a page lays itself out for
-the size it gets). Devices need wepaper 0.3 or newer.
+Web wallpapers play on a device too: their plugin lays the page out as a monitor would have
+it and the device gets the part the fill, zoom and shifts frame, as with a scene (wepaper 0.3.2
+or newer; before, the page was laid out at the device's size and the picture settings did
+nothing for it). Devices need wepaper 0.3 or newer.
 
 ## Settings
 
