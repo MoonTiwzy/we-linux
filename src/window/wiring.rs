@@ -100,7 +100,14 @@ pub(super) fn wire(ui: &AppWindow) {
     on!(on_settings_shown, |app| app.show_settings());
     on!(on_device_add, |app| app.device_add());
     on!(on_device_remove, |app, index| app.device_remove(index));
-    on!(on_device_picture, |app, index| app.device_picture(index));
+    on!(on_device_edit, |app, index| app.open_device_editor(index));
+    on!(on_device_edit_row, |app, index| app.device_edit_row(index));
+    on!(on_device_editor_drag_start, |app| app.device_drag_start());
+    on!(on_device_editor_drag, |app, dx, dy| app.device_drag(dx, dy));
+    on!(on_device_editor_wheel, |app, x, y, delta| app.device_wheel(x, y, delta));
+    on!(on_device_editor_edited, |app| app.device_edited());
+    on!(on_device_editor_ok, |app| app.device_editor_ok());
+    on!(on_device_editor_cancel, |app| app.device_editor_cancel());
     on!(on_settings_cancelled, |app| app.settings_cancelled());
     on!(on_settings_save, |app| app.save_settings());
     on!(on_settings_reset, |app| app.reset_settings());

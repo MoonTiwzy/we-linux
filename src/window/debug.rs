@@ -2,7 +2,8 @@
 //! screenshots and checks. Not in the usage: it is a tool of development.
 //!
 //! tab=N, filters=0|1, select=N, settings=N (its tab), scroll=N (the settings'
-//! devices tab, N pixels down), monitors, dialog=N,
+//! devices tab, N pixels down), monitors, dialog=N, device=N (the device
+//! editor on the saved device N),
 //! menu=N, mini, pick=a.b.c (tiles picked as Ctrl would), ask (the question
 //! Delete puts), band (a rectangle drawn over the grid), phase=P (the
 //! selected wallpaper on its way to the desktop, as if the renderer said so:
@@ -73,6 +74,9 @@ pub(super) fn apply(ui: &AppWindow, start_monitors: &Timer) -> [Timer; 3] {
     }
     if let Some(dialog) = number("dialog") {
         ui.set_dialog(dialog);
+    }
+    if let Some(device) = number("device") {
+        slot::with(|app| app.open_device_editor(device));
     }
     if let Some(menu) = number("menu") {
         ui.set_debug_menu(menu);

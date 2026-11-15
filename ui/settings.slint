@@ -53,6 +53,8 @@ export struct DeviceEntry {
     shift-y: float,
     /// 0 a rectangle, 1 a circle (a round panel).
     shape: int,
+    /// The renderer knows it: it was saved with "OK".
+    saved: bool,
 }
 
 export struct PluginEntry {
@@ -63,7 +65,7 @@ export struct PluginEntry {
 }
 
 // A row: the name in grey at the left half, the control in the right half.
-component Row inherits Rectangle {
+export component Row inherits Rectangle {
     in property <string> label;
     in property <string> hint;
     in property <bool> enabled: true;
@@ -106,7 +108,7 @@ component Row inherits Rectangle {
 }
 
 // A drop-down in a row.
-component Pick inherits DropList {
+export component Pick inherits DropList {
     font-size: 12.6px;
 }
 
@@ -142,14 +144,10 @@ export component SettingsView inherits Rectangle {
     in-out property <int> device;
     callback device-add();
     callback device-remove(int);
-    /// The picture of the device at that row was changed in the editor: it is
-    /// shown on the device at once, to be kept with "OK".
-    callback device-picture(int);
+    /// The picture of the device at that row is to be edited, in the device editor.
+    callback device-edit(int);
     /// How far the devices' tab is scrolled.
     in-out property <length> devices-offset;
-    /// What the device in the editor shows now, when it is known.
-    in property <image> device-preview;
-    in property <bool> device-previewed;
     callback accepted();
     callback cancelled();
     callback reset();
@@ -675,8 +673,6 @@ export component SettingsView inherits Rectangle {
         // ------------------------------------------------------------ devices
         if root.tab == 3: fifth := Scroll {
             offset <=> root.devices-offset;
-            // The picture in it is moved by dragging: the tab itself scrolls by the wheel.
-            mouse-drag-pan: false;
             x: 19px;
             y: 65px;
             width: parent.width - 29px;
@@ -817,167 +813,16 @@ export component SettingsView inherits Rectangle {
                         title: L.t("Picture", "Картинка");
                         icon: Icons.image;
                         Row {
-                            label: L.t("Fill:", "Заполнение:");
-                            hint: L.t("How a wallpaper of another shape fills the device: cropped to cover it, whole with bars, or stretched.", "Как обои другой формы заполняют устройство: обрезаются, чтобы закрыть его целиком, помещаются целиком с полями или растягиваются.");
-                            Pick {
-                                horizontal-stretch: 1;
-                                options: [L.t("Cover (crop)", "Заполнить (обрезать)"), L.t("Fit (whole picture)", "Вписать (целиком)"), L.t("Stretch", "Растянуть")];
-                                index: d.fill;
-                                selected(n) => {
-                                    root.devices[i].fill = n;
-                                    root.device-picture(i);
-                                }
-                            }
-                        }
-                        // What the device shows right now. The picture is moved by
-                        // dragging it and enlarged with the wheel, about the pointer.
-                        Rectangle {
-                            height: 236px;
-                            Rectangle {
-                                property <float> shape: max(1, d.width) / max(1, d.height);
-                                x: (parent.width - self.width) / 2;
-                                y: 8px;
-                                width: self.shape >= 1 ? 220px : 220px * self.shape;
-                                height: self.shape >= 1 ? 220px / self.shape : 220px;
-                                background: #000000;
-                                border-width: 1px;
-                                border-color: grab.pressed ? Theme.primary : Theme.field-border;
-                                clip: true;
-                                if root.device-previewed: Image {
-                                    width: parent.width;
-                                    height: parent.height;
-                                    source: root.device-preview;
-                                    image-fit: fill;
-                                }
-                                if !root.device-previewed: Text {
-                                    x: 8px;
-                                    width: parent.width - 16px;
-                                    height: parent.height;
-                                    text: L.t("The device's picture shows here once the device is saved (OK) and has a wallpaper.", "Картинка устройства появится здесь, когда устройство сохранено (OK) и на нём есть обои.");
-                                    color: Theme.faint;
-                                    font-size: 11.2px;
-                                    wrap: word-wrap;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-                                grab := TouchArea {
-                                    property <float> from-x;
-                                    property <float> from-y;
-                                    mouse-cursor: self.pressed ? MouseCursor.grabbing : MouseCursor.grab;
-                                    pointer-event(event) => {
-                                        if event.kind == PointerEventKind.down {
-                                            self.from-x = d.shift-x;
-                                            self.from-y = d.shift-y;
-                                        }
-                                    }
-                                    moved => {
-                                        if self.pressed {
-                                            root.devices[i].shift-x = clamp(self.from-x + (self.mouse-x - self.pressed-x) / self.width * 100, -2000, 2000);
-                                            root.devices[i].shift-y = clamp(self.from-y - (self.mouse-y - self.pressed-y) / self.height * 100, -2000, 2000);
-                                            root.device-picture(i);
-                                        }
-                                    }
-                                    scroll-event(event) => {
-                                        // The point under the pointer stays under it.
-                                        let zoom = clamp(d.zoom * (event.delta-y > 0 ? 1.1 : 1 / 1.1), 5, 2000);
-                                        let by = zoom / max(1, d.zoom);
-                                        let at-x = (self.mouse-x / self.width - 0.5) * 100;
-                                        let at-y = (0.5 - self.mouse-y / self.height) * 100;
-                                        root.devices[i].shift-x = clamp(at-x - (at-x - d.shift-x) * by, -2000, 2000);
-                                        root.devices[i].shift-y = clamp(at-y - (at-y - d.shift-y) * by, -2000, 2000);
-                                        root.devices[i].zoom = zoom;
-                                        root.device-picture(i);
-                                        return accept;
-                                    }
-                                }
-                            }
-                        }
-                        Text {
-                            text: L.t("Drag the picture to move it, turn the wheel over it to zoom.", "Тяни картинку, чтобы подвинуть, крути колесо над ней, чтобы приблизить или отдалить.");
-                            color: Theme.faint;
-                            font-size: 11.2px;
-                            horizontal-alignment: center;
-                            wrap: word-wrap;
-                        }
-                        Row {
-                            label: L.t("Zoom:", "Увеличение:");
-                            hint: L.t("100% is as the fill has it. More enlarges the wallpaper about the device's middle, less shows more of it, with the wallpaper's background around.", "100% это как задаёт заполнение. Больше: обои крупнее от середины устройства, меньше: видно больше обоев, вокруг их фон.");
-                            Rail {
-                                horizontal-stretch: 1;
-                                minimum: 10;
-                                maximum: 500;
-                                value: d.zoom;
-                                changed(v) => {
-                                    root.devices[i].zoom = round(v);
-                                    root.device-picture(i);
-                                }
-                            }
-                            Text {
-                                width: 46px;
-                                text: round(d.zoom) + "%";
-                                color: Theme.text;
-                                font-size: 12.6px;
-                                vertical-alignment: center;
-                                horizontal-alignment: right;
-                            }
-                        }
-                        Row {
-                            label: L.t("Shift right:", "Сдвиг вправо:");
-                            hint: L.t("The wallpaper moved, in percent of the device's width: what the fill cropped away comes into view.", "Обои сдвигаются, в процентах от ширины устройства: показывается то, что обрезало заполнение.");
-                            Rail {
-                                horizontal-stretch: 1;
-                                minimum: -300;
-                                maximum: 300;
-                                value: d.shift-x;
-                                changed(v) => {
-                                    root.devices[i].shift-x = round(v);
-                                    root.device-picture(i);
-                                }
-                            }
-                            Text {
-                                width: 46px;
-                                text: round(d.shift-x) + "%";
-                                color: Theme.text;
-                                font-size: 12.6px;
-                                vertical-alignment: center;
-                                horizontal-alignment: right;
-                            }
-                        }
-                        Row {
-                            label: L.t("Shift up:", "Сдвиг вверх:");
-                            hint: L.t("The wallpaper moved, in percent of the device's height.", "Обои сдвигаются, в процентах от высоты устройства.");
-                            Rail {
-                                horizontal-stretch: 1;
-                                minimum: -300;
-                                maximum: 300;
-                                value: d.shift-y;
-                                changed(v) => {
-                                    root.devices[i].shift-y = round(v);
-                                    root.device-picture(i);
-                                }
-                            }
-                            Text {
-                                width: 46px;
-                                text: round(d.shift-y) + "%";
-                                color: Theme.text;
-                                font-size: 12.6px;
-                                vertical-alignment: center;
-                                horizontal-alignment: right;
-                            }
-                        }
-                        Row {
-                            label: L.t("Position:", "Позиция:");
+                            label: L.t("Shape, fill, zoom:", "Форма, заполнение, увеличение:");
+                            hint: d.saved ? L.t("In the device editor, which also opens from the device in \"Choose monitor\".", "В редакторе устройства, он же открывается кликом по устройству в «Выбрать монитор».") : L.t("Once the device is saved (OK).", "Когда устройство сохранено (OK).");
+                            enabled: d.saved;
                             Btn {
                                 horizontal-stretch: 1;
                                 kind: 1;
                                 font-size: 12.6px;
-                                text: L.t("RESET", "СБРОСИТЬ");
-                                clicked => {
-                                    root.devices[i].zoom = 100;
-                                    root.devices[i].shift-x = 0;
-                                    root.devices[i].shift-y = 0;
-                                    root.device-picture(i);
-                                }
+                                enabled: d.saved;
+                                text: L.t("ADJUST…", "НАСТРОИТЬ…");
+                                clicked => { root.device-edit(i); }
                             }
                         }
                     }

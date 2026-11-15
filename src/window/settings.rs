@@ -63,61 +63,8 @@ fn playback_choices(row: Row, several: bool) -> Vec<&'static str> {
 const FILLS: [&str; 3] = ["cover", "contain", "stretch"];
 const SHAPES: [&str; 2] = ["rect", "circle"];
 
-/// What the devices' editor asks of the renderer while it is open: a picture
-/// to show at once, a look at what a device shows.
-enum Live {
-    Picture(String, Vec<(&'static str, serde_json::Value)>),
-    Preview(String),
-}
-
-/// The thread that asks: the window never waits for the renderer. Of what
-/// piled up while it was busy, the newest picture of a device and one look count.
-fn live() -> &'static std::sync::mpsc::Sender<Live> {
-    static LIVE: std::sync::OnceLock<std::sync::mpsc::Sender<Live>> = std::sync::OnceLock::new();
-    LIVE.get_or_init(|| {
-        let (tx, rx) = std::sync::mpsc::channel::<Live>();
-        std::thread::spawn(move || {
-            while let Ok(first) = rx.recv() {
-                let mut pictures: Vec<(String, Vec<(&'static str, serde_json::Value)>)> = Vec::new();
-                let mut preview = None;
-                for job in std::iter::once(first).chain(rx.try_iter()) {
-                    match job {
-                        Live::Picture(name, picture) => {
-                            pictures.retain(|(other, _)| *other != name);
-                            pictures.push((name, picture));
-                        }
-                        Live::Preview(name) => preview = Some(name),
-                    }
-                }
-                for (name, picture) in pictures {
-                    for (key, value) in picture {
-                        let _ = engine::call(serde_json::json!({
-                            "cmd": "set", "path": format!("outputs/{name}/{key}"), "value": value
-                        }));
-                    }
-                }
-                if let Some(name) = preview {
-                    let file = engine::runtime_dir().join("device-preview.png");
-                    let shot =
-                        engine::call(serde_json::json!({ "cmd": "snapshot", "file": file, "output": name }))
-                            .ok()
-                            .and_then(|_| image::open(&file).ok())
-                            .map(|picture| picture.to_rgba8());
-                    super::slot::on_ui(move |app| app.device_preview_arrived(&name, shot));
-                }
-            }
-        });
-        tx
-    })
-}
-
-thread_local! {
-    /// Looks at the device in the editor a few times a second while the settings are open.
-    static PREVIEWS: slint::Timer = slint::Timer::default();
-}
-
 /// A device as the settings' editor holds it.
-fn device_entry(device: &Device) -> DeviceEntry {
+pub(super) fn device_entry(device: &Device) -> DeviceEntry {
     DeviceEntry {
         name: device.name.as_str().into(),
         enabled: device.enabled,
@@ -130,11 +77,12 @@ fn device_entry(device: &Device) -> DeviceEntry {
         shift_x: device.shift_x,
         shift_y: device.shift_y,
         shape: i32::from(device.round()),
+        saved: false,
     }
 }
 
 /// The device the editor's row describes.
-fn device_of(entry: &DeviceEntry) -> Device {
+pub(super) fn device_of(entry: &DeviceEntry) -> Device {
     Device {
         name: entry.name.trim().to_owned(),
         width: entry.width.max(0) as u32,
@@ -148,6 +96,19 @@ fn device_of(entry: &DeviceEntry) -> Device {
         shift_y: entry.shift_y.clamp(desktop::SHIFT_RANGE.0, desktop::SHIFT_RANGE.1),
         shape: SHAPES[entry.shape.clamp(0, 1) as usize].to_owned(),
     }
+}
+
+/// The settings' rows for `devices`; a row is saved when a saved device has its name.
+fn rows(devices: &[Device]) -> ModelRc<DeviceEntry> {
+    let saved = Settings::load().devices;
+    let entries: Vec<DeviceEntry> = devices
+        .iter()
+        .map(|device| DeviceEntry {
+            saved: saved.iter().any(|s| s.name == device.name),
+            ..device_entry(device)
+        })
+        .collect();
+    ModelRc::new(VecModel::from(entries))
 }
 
 /// A name no device in `taken` has: `wanted`, or `wanted 2`, `wanted 3`...
@@ -257,86 +218,15 @@ impl App {
             })
             .collect();
         ui.set_plugins(ModelRc::new(VecModel::from(plugins)));
-        self.watch_devices();
-        let devices: Vec<DeviceEntry> = settings.devices.iter().map(device_entry).collect();
-        ui.set_device(ui.get_device().clamp(0, (devices.len() as i32 - 1).max(0)));
-        ui.set_devices(ModelRc::new(VecModel::from(devices)));
-    }
-
-    /// The name the renderer knows the device of that row by: the one it was
-    /// saved with. A row not saved yet is no device of the renderer's.
-    fn told_device(index: i32) -> Option<String> {
-        usize::try_from(index).ok().and_then(|i| Settings::load().devices.into_iter().nth(i)).map(|d| d.name)
-    }
-
-    /// The editor moved a device's picture: the device shows it at once.
-    pub(super) fn device_picture(&mut self, index: i32) {
-        let Some(ui) = self.ui() else { return };
-        let (Some(row), Some(name)) = (
-            usize::try_from(index).ok().and_then(|i| ui.get_devices().row_data(i)),
-            Self::told_device(index),
-        ) else {
-            return;
-        };
-        let _ = live().send(Live::Picture(name, device_of(&row).picture().into()));
+        ui.set_device(ui.get_device().clamp(0, (settings.devices.len() as i32 - 1).max(0)));
+        ui.set_devices(rows(&settings.devices));
     }
 
     /// "Отмена": the devices show their saved pictures again.
     pub(super) fn settings_cancelled(&mut self) {
         for device in desktop::devices() {
-            let _ = live().send(Live::Picture(device.name.clone(), device.picture().into()));
-        }
-    }
-
-    /// A few times a second while the settings are open on the devices: ask what
-    /// the device in the editor shows.
-    fn watch_devices(&self) {
-        PREVIEWS.with(|timer| {
-            if timer.running() {
-                return;
-            }
-            timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(300), || {
-                super::slot::try_with(|app| {
-                    let Some(ui) = app.ui() else { return };
-                    if !ui.get_settings_open() {
-                        PREVIEWS.with(slint::Timer::stop);
-                        ui.set_device_previewed(false);
-                        return;
-                    }
-                    if ui.get_settings_tab() != 3 {
-                        return;
-                    }
-                    match Self::told_device(ui.get_device()) {
-                        Some(name) => {
-                            let _ = live().send(Live::Preview(name));
-                        }
-                        None => ui.set_device_previewed(false),
-                    }
-                });
-            });
-        });
-    }
-
-    /// What a device shows came back (nothing: it shows nothing, or is not there).
-    fn device_preview_arrived(&mut self, name: &str, shot: Option<image::RgbaImage>) {
-        let Some(ui) = self.ui() else { return };
-        // Another device was picked meanwhile: this is not its picture.
-        if Self::told_device(ui.get_device()).as_deref() != Some(name) {
-            return;
-        }
-        match shot {
-            Some(shot) => {
-                let (width, height) = shot.dimensions();
-                ui.set_device_preview(slint::Image::from_rgba8(
-                    slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                        shot.as_raw(),
-                        width,
-                        height,
-                    ),
-                ));
-                ui.set_device_previewed(true);
-            }
-            None => ui.set_device_previewed(false),
+            let _ = super::device_editor::live()
+                .send(super::device_editor::Live::Picture(device.name.clone(), device.picture().into()));
         }
     }
 
@@ -347,13 +237,26 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// "НАСТРОИТЬ…" in a row: the device editor, on the saved device of that name.
+    pub(super) fn device_edit_row(&mut self, index: i32) {
+        let Some(ui) = self.ui() else { return };
+        let Some(row) = usize::try_from(index).ok().and_then(|i| ui.get_devices().row_data(i)) else {
+            return;
+        };
+        if let Some(saved) =
+            Settings::load().devices.iter().position(|device| device.name == row.name.as_str())
+        {
+            self.open_device_editor(saved as i32);
+        }
+    }
+
     /// "ДОБАВИТЬ": one more row in the editor, picked, for the user to fill in.
     pub(super) fn device_add(&mut self) {
         let Some(ui) = self.ui() else { return };
         let mut devices = self.edited_devices();
         let taken: Vec<String> = devices.iter().map(|device| device.name.clone()).collect();
         devices.push(Device { name: free_name("device", &taken), ..Device::default() });
-        ui.set_devices(ModelRc::new(VecModel::from(devices.iter().map(device_entry).collect::<Vec<_>>())));
+        ui.set_devices(rows(&devices));
         ui.set_device(devices.len() as i32 - 1);
     }
 
@@ -366,7 +269,7 @@ impl App {
         {
             devices.remove(index);
         }
-        ui.set_devices(ModelRc::new(VecModel::from(devices.iter().map(device_entry).collect::<Vec<_>>())));
+        ui.set_devices(rows(&devices));
         ui.set_device((ui.get_device()).clamp(0, (devices.len() as i32 - 1).max(0)));
     }
 

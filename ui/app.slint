@@ -8,9 +8,10 @@ import { Btn, Check, Caret, DropList, Field, Rail, Scroll, GroupBox, Ruled, Link
 import { Item, PageButton, Prop, Tile, Pager, PropRow, SourceTab } from "parts.slint";
 import { MonitorEntry, MonitorPanel } from "monitors.slint";
 import { SettingsView, SettingsValues, PluginEntry, DeviceEntry } from "settings.slint";
+import { DeviceEditor, DeviceView } from "device.slint";
 import { Busy, Toast, Alert } from "busy.slint";
 
-export { L, Tip, Theme, Icons, Glyph, Item, PageButton, Prop, MonitorEntry, SettingsValues, PluginEntry, DeviceEntry, MenuEntry }
+export { L, Tip, Theme, Icons, Glyph, Item, PageButton, Prop, MonitorEntry, SettingsValues, PluginEntry, DeviceEntry, DeviceView, MenuEntry }
 
 /// A line of a filter group: a box (kind 0), a divider (1), or a heading
 /// with "Все" and "Ничего" for its sub-group (2).
@@ -219,10 +220,24 @@ export component AppWindow inherits Window {
     in-out property <int> device;
     callback device-add();
     callback device-remove(int);
-    callback device-picture(int);
-    in property <image> device-preview;
-    in property <bool> device-previewed;
     in-out property <length> devices-offset;
+    /// The device editor, over everything: the device (a row of the saved
+    /// devices), the last snapshot of it and where that goes in the field.
+    in-out property <bool> device-editor-open;
+    in-out property <DeviceEntry> device-editor;
+    in property <image> device-editor-shot;
+    in property <bool> device-editor-shown;
+    in property <DeviceView> device-editor-view: { scale: 1, x: 0, y: 0, wide: 1 };
+    /// Open the editor on that row of the saved devices.
+    callback device-edit(int);
+    /// Open the editor from that row of the settings' devices.
+    callback device-edit-row(int);
+    callback device-editor-drag-start();
+    callback device-editor-drag(float, float);
+    callback device-editor-wheel(float, float, float);
+    callback device-editor-edited();
+    callback device-editor-ok();
+    callback device-editor-cancel();
     /// The settings were closed without "OK".
     callback settings-cancelled();
 
@@ -378,7 +393,7 @@ export component AppWindow inherits Window {
                 root.window-maximize();
                 return EventResult.accept;
             }
-            if (root.dialog != 0 || root.settings-open || root.monitors-open) {
+            if (root.dialog != 0 || root.settings-open || root.monitors-open || root.device-editor-open) {
                 return EventResult.reject;
             }
             if (event.text == Key.LeftArrow) {
@@ -1864,10 +1879,8 @@ export component AppWindow inherits Window {
         devices <=> root.devices;
         device <=> root.device;
         device-add => { root.device-add(); }
-        device-picture(index) => { root.device-picture(index); }
+        device-edit(index) => { root.device-edit-row(index); }
         devices-offset <=> root.devices-offset;
-        device-preview: root.device-preview;
-        device-previewed: root.device-previewed;
         device-remove(index) => { root.device-remove(index); }
         accepted => {
             root.settings-save();
@@ -1880,6 +1893,26 @@ export component AppWindow inherits Window {
         reset => { root.settings-reset(); }
         clear-cache => { root.cache-clear(); }
         cache-size: root.cache-size;
+    }
+
+    // ---------------------------------------------------------------- the device editor
+    // Over the settings and "Choose monitor", which it opens from.
+    if root.device-editor-open: Dialog {
+        title: root.device-editor.name;
+        panel-width: 460px;
+        closed => { root.device-editor-cancel(); }
+        DeviceEditor {
+            device <=> root.device-editor;
+            shot: root.device-editor-shot;
+            shown: root.device-editor-shown;
+            view: root.device-editor-view;
+            drag-start => { root.device-editor-drag-start(); }
+            drag(dx, dy) => { root.device-editor-drag(dx, dy); }
+            wheel(x, y, delta) => { root.device-editor-wheel(x, y, delta); }
+            edited => { root.device-editor-edited(); }
+            ok => { root.device-editor-ok(); }
+            cancel => { root.device-editor-cancel(); }
+        }
     }
 
     // ---------------------------------------------------------------- the small dialogs

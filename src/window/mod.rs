@@ -37,6 +37,7 @@ mod catalog;
 mod debug;
 mod desk;
 mod details;
+mod device_editor;
 mod filters;
 mod framing;
 mod grid;
@@ -99,6 +100,7 @@ pub(super) struct App {
     language: Language,
     /// The question before unsubscribing, while it is asked.
     unsubscribing: Option<Unsubscribing>,
+    device_editor: device_editor::Editor,
 }
 
 impl App {
@@ -208,6 +210,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         progress: Progress::default(),
         language: Language::picked(language.clone()),
         unsubscribing: None,
+        device_editor: device_editor::Editor::default(),
     });
 
     let start_monitors = Timer::default();
