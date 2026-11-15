@@ -8,7 +8,7 @@
 //! one is back, a few times a second. Every change goes to the device at once;
 //! "OK" keeps it in the settings, "Cancel" puts the saved picture back.
 
-use slint::Model;
+use slint::{ComponentHandle, Model};
 use we_linux_ui::{DeviceEntry, DeviceView};
 
 use super::App;
@@ -21,11 +21,13 @@ use crate::engine;
 /// a snapshot of a device for the field.
 pub(super) enum Live {
     Picture(String, Vec<(&'static str, serde_json::Value)>),
-    /// A snapshot for the device's look `asked`, `k` times wider than the device.
+    /// A snapshot for the device's look `asked`, `k` times wider than the device,
+    /// `size` pixels large (the field's).
     Shot {
         name: String,
         asked: Look,
         k: f32,
+        size: (u32, u32),
     },
 }
 
@@ -48,7 +50,7 @@ pub(super) fn live() -> &'static std::sync::mpsc::Sender<Live> {
                             pictures.retain(|(other, _)| *other != name);
                             pictures.push((name, picture));
                         }
-                        Live::Shot { name, asked, k } => shot = Some((name, asked, k)),
+                        Live::Shot { name, asked, k, size } => shot = Some((name, asked, k, size)),
                     }
                 }
                 for (name, picture) in pictures {
@@ -58,8 +60,8 @@ pub(super) fn live() -> &'static std::sync::mpsc::Sender<Live> {
                         }));
                     }
                 }
-                if let Some((name, asked, k)) = shot {
-                    let taken = snapshot(&name, framing::view_of(asked, k));
+                if let Some((name, asked, k, size)) = shot {
+                    let taken = snapshot(&name, framing::view_of(asked, k), size);
                     super::slot::on_ui(move |app| app.device_shot_arrived(&name, asked, k, taken));
                 }
             }
@@ -68,18 +70,22 @@ pub(super) fn live() -> &'static std::sync::mpsc::Sender<Live> {
     })
 }
 
-/// What the device `name` would show with the look `view`; a renderer without
-/// `snapshot-look` gives what it shows and answers nothing.
-fn snapshot(name: &str, view: Look) -> Shot {
-    let file = engine::runtime_dir().join("device-preview.png");
+/// What the device `name` would show with the look `view`, drawn `size` pixels
+/// large, as raw pixels; a renderer without `snapshot-look` gives what it shows
+/// and answers nothing, one without `snapshot-size` and `snapshot-rgba` writes a
+/// PNG at the device's size.
+fn snapshot(name: &str, view: Look, size: (u32, u32)) -> Shot {
+    let file = engine::runtime_dir().join("device-preview");
     let reply = engine::call(serde_json::json!({
         "cmd": "snapshot",
         "file": file,
         "output": name,
         "look": { "zoom": view.zoom / 100.0, "shift_x": view.shift_x / 100.0, "shift_y": view.shift_y / 100.0 },
+        "size": [size.0, size.1],
+        "format": "rgba",
     }))
     .ok()?;
-    let picture = image::open(&file).ok()?.to_rgba8();
+    let picture = picture_of(std::fs::read(&file).ok()?, size)?;
     Some((reply, picture))
 }
 
@@ -96,8 +102,18 @@ fn keep_picture(devices: &mut [Device], name: &str, edited: &Device) -> bool {
     }
 }
 
+/// A snapshot as the renderer wrote it: `size` raw RGBA pixels, or a PNG from a
+/// renderer that does not write raw ones.
+fn picture_of(bytes: Vec<u8>, size: (u32, u32)) -> Option<image::RgbaImage> {
+    if bytes.len() == size.0 as usize * size.1 as usize * 4 {
+        return image::RgbaImage::from_raw(size.0, size.1, bytes);
+    }
+    image::load_from_memory(&bytes).ok().map(|picture| picture.to_rgba8())
+}
+
 thread_local! {
-    /// Asks for a snapshot a few times a second while the editor is open.
+    /// Asks for the next snapshot while the editor is open: at once when the last
+    /// one is back, up to 30 a second (a snapshot costs the renderer a few ms).
     static SHOTS: slint::Timer = slint::Timer::default();
 }
 
@@ -146,7 +162,7 @@ impl App {
         ui.set_device_editor_open(true);
         self.ask_device_shot();
         SHOTS.with(|timer| {
-            timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(300), || {
+            timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(33), || {
                 super::slot::try_with(App::ask_device_shot);
             });
         });
@@ -166,7 +182,9 @@ impl App {
             return;
         }
         self.device_editor.asking = true;
-        let _ = live().send(Live::Shot { name, asked: Look::from(&device), k: self.device_editor.k });
+        let Some(ui) = self.ui() else { return };
+        let size = framing::shot_size(device.width, device.height, ui.window().scale_factor());
+        let _ = live().send(Live::Shot { name, asked: Look::from(&device), k: self.device_editor.k, size });
     }
 
     /// A snapshot came back (nothing: the device shows nothing, or is gone).
@@ -316,6 +334,21 @@ mod tests {
 
     fn device(name: &str, zoom: f32) -> Device {
         Device { name: name.into(), command: "c".into(), zoom, ..Device::default() }
+    }
+
+    #[test]
+    fn a_snapshot_is_raw_pixels_or_a_png() {
+        let raw: Vec<u8> = (0..16).collect();
+        let picture = picture_of(raw.clone(), (2, 2)).unwrap();
+        assert_eq!((picture.dimensions(), picture.as_raw().clone()), ((2, 2), raw));
+        // A renderer without `snapshot-rgba` writes a PNG, at whatever size it drew.
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(3, 1, image::Rgba([9, 8, 7, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let picture = picture_of(png, (2, 2)).unwrap();
+        assert_eq!((picture.dimensions(), picture.get_pixel(2, 0).0), ((3, 1), [9, 8, 7, 255]));
+        assert!(picture_of(vec![1, 2, 3], (2, 2)).is_none());
     }
 
     #[test]

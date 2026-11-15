@@ -12,8 +12,9 @@
 
 use crate::desktop::{self, Device};
 
-/// How much more of the wallpaper the field shows than the device does, each way.
-pub const WIDE: f32 = 2.0;
+/// How much more of the wallpaper the field shows than the device does, each way:
+/// enough to see what is around, while the device's own picture stays large.
+pub const WIDE: f32 = 1.6;
 /// The zoom the editor allows, wheel and slider alike, in percent.
 pub const ZOOM: (f32, f32) = (10.0, 500.0);
 /// What the wheel reports for one notch (Slint gives a wheel's line as 60
@@ -42,6 +43,20 @@ pub struct Placement {
     pub scale: f32,
     pub x: f32,
     pub y: f32,
+}
+
+/// The field's longer side in logical pixels (`ui/device.slint`); the shorter one
+/// follows the device's shape.
+pub const FIELD: f32 = 420.0;
+
+/// The size to take the field's snapshot at for a device of `width` x `height`:
+/// the field's own pixels (its logical size times the window's scale), so it is
+/// shown without scaling, and in the device's shape, so it is framed the same.
+pub fn shot_size(width: u32, height: u32, scale: f32) -> (u32, u32) {
+    let aspect = width.max(1) as f32 / height.max(1) as f32;
+    let (w, h) = if aspect >= 1.0 { (FIELD, FIELD / aspect) } else { (FIELD * aspect, FIELD) };
+    let side = |logical: f32| (logical * scale).round().clamp(1.0, 8192.0) as u32;
+    (side(w), side(h))
 }
 
 /// The look to take the field's snapshot with.
@@ -195,6 +210,14 @@ mod tests {
         let small = look(7.0, 0.0, 0.0);
         assert_eq!(wheel(small, 0.5, 0.5, -NOTCH, 2.0), small, "down does not grow it to the range");
         near(wheel(small, 0.5, 0.5, NOTCH, 2.0), look(7.7, 0.0, 0.0));
+    }
+
+    #[test]
+    fn a_snapshot_is_taken_at_the_fields_pixels() {
+        assert_eq!(shot_size(480, 480, 1.0), (420, 420));
+        assert_eq!(shot_size(1920, 200, 1.25), (525, 55));
+        assert_eq!(shot_size(200, 1920, 1.0), (44, 420));
+        assert_eq!(shot_size(0, 0, 1.0), (420, 420), "a device without a size counts as square");
     }
 
     #[test]

@@ -1,0 +1,2 @@
+16:51:17.248 daemon: info: started: we-linux 0.3.0 on 2026-11-15; compositor: Wayland (no version said); renderer: /home/vlad/.local/bin/wepaper
+16:51:48.590 daemon: info: told to go: the renderer stops and the desktop gets its picture back
