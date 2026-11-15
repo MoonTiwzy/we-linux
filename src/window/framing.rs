@@ -87,7 +87,9 @@ pub fn drag(from: Look, dx: f32, dy: f32, k: f32) -> Look {
 /// The look after the wheel turned by `delta` (up enlarges) over the point `at_x`,
 /// `at_y` of the field (0 to 1, from the top left): that point stays where it is.
 pub fn wheel(look: Look, at_x: f32, at_y: f32, delta: f32, k: f32) -> Look {
-    let zoom = (look.zoom * 1.1f32.powf(delta / NOTCH)).clamp(ZOOM.0, ZOOM.1);
+    // A zoom already outside the range (set elsewhere) is a limit of its own: a
+    // turn never moves it the other way.
+    let zoom = (look.zoom * 1.1f32.powf(delta / NOTCH)).clamp(ZOOM.0.min(look.zoom), ZOOM.1.max(look.zoom));
     let by = zoom / look.zoom;
     if by == 1.0 {
         // At a limit: nothing moves, not even by a rounding.
@@ -182,6 +184,17 @@ mod tests {
     #[test]
     fn wheel_keeps_the_point_under_the_pointer() {
         near(wheel(look(100.0, 0.0, 0.0), 1.0, 0.5, NOTCH, 2.0), look(110.0, -10.0, 0.0));
+    }
+
+    #[test]
+    fn wheel_outside_the_range_never_turns_the_other_way() {
+        // Set above or below the editor's range elsewhere (the CLI allows 5 to 2000).
+        let big = look(800.0, 0.0, 0.0);
+        assert_eq!(wheel(big, 0.5, 0.5, NOTCH, 2.0), big, "up does not shrink it to the range");
+        near(wheel(big, 0.5, 0.5, -NOTCH, 2.0), look(727.273, 0.0, 0.0));
+        let small = look(7.0, 0.0, 0.0);
+        assert_eq!(wheel(small, 0.5, 0.5, -NOTCH, 2.0), small, "down does not grow it to the range");
+        near(wheel(small, 0.5, 0.5, NOTCH, 2.0), look(7.7, 0.0, 0.0));
     }
 
     #[test]

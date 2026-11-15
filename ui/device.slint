@@ -35,6 +35,13 @@ export component DeviceEditor inherits VerticalLayout {
     callback ok();
     callback cancel();
     spacing: 6px;
+    // A slider that was moved by hand has let go of its binding: it follows the
+    // wheel, a drag and the reset from here.
+    changed device => {
+        zoom-rail.value = root.device.zoom;
+        shift-x-rail.value = root.device.shift-x;
+        shift-y-rail.value = root.device.shift-y;
+    }
 
     HorizontalLayout {
         spacing: 18px;
@@ -84,7 +91,7 @@ export component DeviceEditor inherits VerticalLayout {
             Row {
                 label: L.t("Zoom:", "Увеличение:");
                 hint: L.t("100% is as the fill has it. More enlarges the wallpaper about the device's middle, less shows more of it, with the wallpaper's background around.", "100% это как задаёт заполнение. Больше: обои крупнее от середины устройства, меньше: видно больше обоев, вокруг их фон.");
-                Rail {
+                zoom-rail := Rail {
                     horizontal-stretch: 1;
                     minimum: 10;
                     maximum: 500;
@@ -106,7 +113,7 @@ export component DeviceEditor inherits VerticalLayout {
             Row {
                 label: L.t("Shift right:", "Сдвиг вправо:");
                 hint: L.t("The wallpaper moved, in percent of the device's width: what the fill cropped away comes into view.", "Обои сдвигаются, в процентах от ширины устройства: показывается то, что обрезало заполнение.");
-                Rail {
+                shift-x-rail := Rail {
                     horizontal-stretch: 1;
                     minimum: -300;
                     maximum: 300;
@@ -128,7 +135,7 @@ export component DeviceEditor inherits VerticalLayout {
             Row {
                 label: L.t("Shift up:", "Сдвиг вверх:");
                 hint: L.t("The wallpaper moved, in percent of the device's height.", "Обои сдвигаются, в процентах от высоты устройства.");
-                Rail {
+                shift-y-rail := Rail {
                     horizontal-stretch: 1;
                     minimum: -300;
                     maximum: 300;

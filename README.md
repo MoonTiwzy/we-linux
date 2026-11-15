@@ -253,7 +253,7 @@ we-linux clone NAME on|off                whether the wallpaper of every monitor
 we-linux devices                          the devices, each with its size, command and state
 we-linux device add NAME WxH COMMAND [--fps N]
 we-linux device set NAME KEY VALUE        name, size, fps, command, enabled, fill, zoom,
-                                          shift_x, shift_y
+                                          shift_x, shift_y, shape (rect or circle)
 we-linux device remove NAME
 we-linux daemon                           keep the wallpaper on the desktop
 ```
@@ -286,14 +286,17 @@ alike: each monitor's menu in **Choose monitor** has "Clone wallpaper here" (`we
 NAME on|off`). A monitor that is not cloned on shows its own wallpaper, or nothing. A new
 device starts that way: the screens have theirs, the device waits for its own.
 
-Devices are set up in **Settings > Devices**: the name, the size, the frame rate, the command,
-and the picture. The picture is what matters when the device is not shaped like the wallpaper.
-The tab shows what the device shows right now: drag it to move the wallpaper, turn the wheel
-over it to zoom in and out about the pointer, and the device follows as you do. **Fill** says
-how the wallpaper is fitted first (cropped to cover the device, whole with bars, or stretched);
-the zoom and the shifts, which have sliders too, frame the wallpaper itself, so what the fill
-cropped away comes into view and a zoomed picture stays sharp. "OK" keeps it, "Cancel" puts the
-device back. Or on the command line:
+Devices are set up in **Settings > Devices**: the name, the size, the frame rate and the
+command. The picture, which matters when the device is not shaped like the wallpaper, has an
+editor of its own: click the device in **Choose monitor** (or **Adjust…** in the settings). It
+shows the wallpaper around what the device shows, with the device's window in the middle:
+drag to move the wallpaper under it, turn the wheel to zoom in and out about the pointer, and
+the device follows as you do. **Shape** says whether the device's screen is a rectangle or a
+circle (a round panel: the editor shows what falls inside the circle, and its tile in Choose
+monitor is round). **Fill** says how the wallpaper is fitted first (cropped to cover the
+device, whole with bars, or stretched); the zoom and the shifts, which have sliders too, frame
+the wallpaper itself, so what the fill cropped away comes into view and a zoomed picture stays
+sharp. "OK" keeps it, "Cancel" puts the device back. Or on the command line:
 
 ```sh
 we-linux device add panel 480x480 send-frames      # send-frames: your program for the device
@@ -331,7 +334,7 @@ same switches and the hook:
   "hook": "",                // a shell command run when the wallpaper changes
   "devices": [               // what shows a wallpaper and is not a monitor (see Devices)
     { "name": "panel", "width": 480, "height": 480, "fps": 30, "command": "send-frames",
-      "enabled": true, "fill": "cover", "zoom": 100, "shift_x": 0, "shift_y": 0 }
+      "enabled": true, "fill": "cover", "zoom": 100, "shift_x": 0, "shift_y": 0, "shape": "rect" }
   ]
 }
 ```

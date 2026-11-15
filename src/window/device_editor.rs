@@ -83,6 +83,19 @@ fn snapshot(name: &str, view: Look) -> Shot {
     Some((reply, picture))
 }
 
+/// `edited`'s picture kept with the saved device called `name`. False when there
+/// is no such device any more (removed or renamed meanwhile): no other device
+/// takes its picture.
+fn keep_picture(devices: &mut [Device], name: &str, edited: &Device) -> bool {
+    match devices.iter_mut().find(|device| device.name == name) {
+        Some(saved) => {
+            *saved = saved.clone().with_picture(edited);
+            true
+        }
+        None => false,
+    }
+}
+
 thread_local! {
     /// Asks for a snapshot a few times a second while the editor is open.
     static SHOTS: slint::Timer = slint::Timer::default();
@@ -90,8 +103,8 @@ thread_local! {
 
 /// The editor's own state; what it edits is the window's `device-editor`.
 pub(super) struct Editor {
-    /// The row of the saved devices that is open, and the name the renderer knows it by.
-    open: Option<(usize, String)>,
+    /// The saved device that is open, by the name the renderer knows it by.
+    open: Option<String>,
     /// How much wider than the device the field is: `WIDE`, or 1 with a renderer
     /// that cannot snapshot a framing of its own.
     k: f32,
@@ -119,14 +132,14 @@ impl App {
     /// Opens the editor on the saved device of that row.
     pub(super) fn open_device_editor(&mut self, index: i32) {
         let Some(ui) = self.ui() else { return };
-        let Some((index, device)) = usize::try_from(index)
-            .ok()
-            .and_then(|i| Settings::load().devices.into_iter().nth(i).map(|d| (i, d)))
+        let Some(device) =
+            usize::try_from(index).ok().and_then(|i| Settings::load().devices.into_iter().nth(i))
         else {
             return;
         };
+        // Asked wide again each time: the renderer may have been updated meanwhile.
+        self.device_editor = Editor { open: Some(device.name.clone()), ..Editor::default() };
         let k = self.device_editor.k;
-        self.device_editor = Editor { open: Some((index, device.name.clone())), k, ..Editor::default() };
         ui.set_device_editor(device_entry(&device));
         ui.set_device_editor_shown(false);
         ui.set_device_editor_view(DeviceView { scale: 1.0, x: 0.0, y: 0.0, wide: k });
@@ -146,7 +159,7 @@ impl App {
 
     /// A snapshot of the device, unless one is on its way.
     fn ask_device_shot(&mut self) {
-        let (Some((_, name)), Some(device)) = (self.device_editor.open.clone(), self.edited_device()) else {
+        let (Some(name), Some(device)) = (self.device_editor.open.clone(), self.edited_device()) else {
             return;
         };
         if self.device_editor.asking {
@@ -161,7 +174,7 @@ impl App {
         self.device_editor.asking = false;
         let Some(ui) = self.ui() else { return };
         // Closed meanwhile, or opened on another device: not this one's.
-        if self.device_editor.open.as_ref().is_none_or(|(_, open)| open != name) {
+        if self.device_editor.open.as_ref().is_none_or(|open| open != name) {
             return;
         }
         let Some((reply, picture)) = taken else {
@@ -227,7 +240,7 @@ impl App {
 
     /// Something in the editor changed the device: it shows it at once.
     pub(super) fn device_edited(&mut self) {
-        let (Some((_, name)), Some(device)) = (self.device_editor.open.clone(), self.edited_device()) else {
+        let (Some(name), Some(device)) = (self.device_editor.open.clone(), self.edited_device()) else {
             return;
         };
         self.place_device_shot();
@@ -237,13 +250,12 @@ impl App {
     /// "OK": the picture is kept with the device, in the settings and in the
     /// settings' own rows when they are open.
     pub(super) fn device_editor_ok(&mut self) {
-        if let (Some((index, name)), Some(edited)) = (self.device_editor.open.clone(), self.edited_device()) {
+        if let (Some(name), Some(edited)) = (self.device_editor.open.clone(), self.edited_device()) {
             let mut settings = Settings::load();
-            if let Some(saved) = settings.devices.get_mut(index) {
-                *saved = saved.clone().with_picture(&edited);
-                if let Err(e) = settings.save() {
-                    self.warn(e);
-                }
+            if keep_picture(&mut settings.devices, &name, &edited)
+                && let Err(e) = settings.save()
+            {
+                self.warn(e);
             }
             // The settings' row of that device, wherever the unsaved rows put it.
             if let Some(ui) = self.ui()
@@ -255,18 +267,37 @@ impl App {
                     DeviceEntry { saved: row.saved, ..device_entry(&device_of(&row).with_picture(&edited)) };
                 ui.get_devices().set_row_data(at, kept);
             }
+            // A tile that turned round or square shows it.
+            if self.ui().is_some_and(|ui| ui.get_monitors_open()) {
+                self.show_monitors();
+            }
         }
         self.close_device_editor();
     }
 
     /// "Cancel": the device shows its saved picture again.
     pub(super) fn device_editor_cancel(&mut self) {
-        if let Some((index, name)) = self.device_editor.open.clone()
-            && let Some(saved) = Settings::load().devices.into_iter().nth(index)
+        if let Some(name) = self.device_editor.open.clone()
+            && let Some(saved) = Settings::load().devices.into_iter().find(|device| device.name == name)
         {
             let _ = live().send(Live::Picture(name, saved.picture().into()));
         }
         self.close_device_editor();
+    }
+
+    /// The window goes with the editor open: the device gets its saved picture
+    /// back before the program ends (here, not through the thread that may not
+    /// get to it).
+    pub(super) fn leave_device_editor(&mut self) {
+        if let Some(name) = self.device_editor.open.take()
+            && let Some(saved) = Settings::load().devices.into_iter().find(|device| device.name == name)
+        {
+            for (key, value) in saved.picture() {
+                let _ = engine::call(serde_json::json!({
+                    "cmd": "set", "path": format!("outputs/{name}/{key}"), "value": value
+                }));
+            }
+        }
     }
 
     fn close_device_editor(&mut self) {
@@ -276,5 +307,28 @@ impl App {
         if let Some(ui) = self.ui() {
             ui.set_device_editor_open(false);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn device(name: &str, zoom: f32) -> Device {
+        Device { name: name.into(), command: "c".into(), zoom, ..Device::default() }
+    }
+
+    #[test]
+    fn ok_keeps_the_picture_with_the_device_of_that_name() {
+        let edited = Device { zoom: 145.0, shape: "circle".into(), ..device("panel", 0.0) };
+        // "panel" moved up a row since the editor opened: it is still the one changed.
+        let mut devices = vec![device("panel", 100.0), device("b", 100.0)];
+        assert!(keep_picture(&mut devices, "panel", &edited));
+        assert_eq!((devices[0].zoom, devices[0].shape.as_str()), (145.0, "circle"));
+        assert_eq!(devices[1], device("b", 100.0));
+        // Gone meanwhile: nothing else takes its picture.
+        let mut others = vec![device("a", 100.0), device("b", 100.0)];
+        assert!(!keep_picture(&mut others, "panel", &edited));
+        assert_eq!(others, vec![device("a", 100.0), device("b", 100.0)]);
     }
 }

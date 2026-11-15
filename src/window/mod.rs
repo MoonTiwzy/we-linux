@@ -242,6 +242,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
 
     let result = ui.run();
     slot::with(|app| {
+        app.leave_device_editor();
         let _ = app.steam.send(Command::Quit);
     });
     result
