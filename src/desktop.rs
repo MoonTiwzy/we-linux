@@ -559,6 +559,19 @@ pub fn autostart() -> bool {
         .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).trim() == "enabled")
 }
 
+/// The service that starts the daemon of `exe` with the graphical session. A
+/// daemon whose compositor went leaves with a failure (see the daemon's loop)
+/// and is started again, a moment later: not at once, and so not five times
+/// in a row before the next compositor is there, which systemd takes for a
+/// service that cannot start.
+fn unit(exe: &Path) -> String {
+    format!(
+        "[Unit]\nDescription=WE Linux: live wallpapers\nPartOf=graphical-session.target\nAfter=graphical-session.target\n\n\
+         [Service]\nExecStart={} daemon\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=graphical-session.target\n",
+        exe.display()
+    )
+}
+
 /// Have systemd start the daemon with the graphical session, or no longer.
 /// A session that does not start graphical-session.target (a compositor
 /// started by hand, without a session manager) starts no such service: then
@@ -582,16 +595,11 @@ pub fn set_autostart(on: bool) -> Result<Option<String>, String> {
         return run(&["disable", UNIT]).map(|()| None);
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let unit = format!(
-        "[Unit]\nDescription=WE Linux: live wallpapers\nPartOf=graphical-session.target\nAfter=graphical-session.target\n\n\
-         [Service]\nExecStart={} daemon\nRestart=on-failure\n\n[Install]\nWantedBy=graphical-session.target\n",
-        exe.display()
-    );
     let file = config_dir().join("systemd/user").join(UNIT);
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    std::fs::write(&file, unit).map_err(|e| e.to_string())?;
+    std::fs::write(&file, unit(&exe)).map_err(|e| e.to_string())?;
     run(&["daemon-reload"])?;
     run(&["enable", UNIT])?;
     Ok(if crate::compositor::session_target() {
@@ -883,6 +891,20 @@ mod tests {
         let small = Device { zoom: 1.0, ..panel() }.picture();
         assert_eq!(small[1].1, serde_json::json!(0.05), "and so has a zoom");
         assert_eq!(Device { fill: "sideways".into(), ..panel() }.picture()[0].1, "cover");
+    }
+
+    #[test]
+    fn the_service_is_started_again_a_moment_after_its_daemon_leaves() {
+        let unit = unit(Path::new("/usr/bin/we-linux"));
+        let service: Vec<&str> = unit
+            .lines()
+            .skip_while(|line| *line != "[Service]")
+            .take_while(|line| !line.is_empty())
+            .collect();
+        assert_eq!(
+            service,
+            ["[Service]", "ExecStart=/usr/bin/we-linux daemon", "Restart=on-failure", "RestartSec=2"]
+        );
     }
 
     #[test]

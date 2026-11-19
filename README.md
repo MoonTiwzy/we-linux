@@ -186,12 +186,29 @@ compositor:
 - **Others** (river, labwc, Wayfire...) are asked through the wlroots protocols. A window on a
   workspace that is not shown still counts there: the protocol does not say which workspace is.
 
+**When the compositor goes.** When Hyprland, Sway, niri or a compositor asked through the
+wlroots protocols exits or crashes, the daemon stops the renderer and leaves, and the daemon the
+next compositor starts takes over (a new daemon waits up to 5 s for the old one's lock). It
+leaves with exit status 75, so the systemd service of "Start with the session"
+(`Restart=on-failure`) starts it again a moment later. Started while nothing answers on the
+session's Wayland display yet, or while Hyprland is still coming up (start-hyprland starting one
+anew after a crash), the daemon waits for it up to 10 s, and an environment that still names the
+Hyprland that went is no matter: the daemon finds the one that answers on the session's Wayland
+display. When nothing answers there after that, it leaves the same way before it starts
+anything: no hook, no renderer. While a device shows a wallpaper, the daemon stays for it until
+a compositor answers again, the next one on the session's display too when it was up before the
+daemon heard that the last one went; one that answered all along (another session's, a headless
+one) does not count. KDE Plasma does not tell the daemon that it went.
+
 **With awww, swww or the desktop's own wallpaper program.** Keep them. The live wallpaper is
 drawn on the same background layer, and the daemon hands your wallpaper program a still frame of
 the live wallpaper, so the desktop shows the same picture before the engine is up and while it
 is stopped. The picture you had before is remembered and comes back on `we-linux off`, when the
-daemon is stopped and when a wallpaper fails to load. Turn the still off with `"still": false` in
-the settings file if you want your own picture under it.
+daemon is stopped and when a wallpaper fails to load; when your wallpaper program is not there
+to take it, it is kept for the next time, and the picture of a monitor that is not connected any
+more is forgotten. A picture you set on a monitor yourself in the meantime (with awww, swww,
+hyprpaper or Plasma's settings) wins: the old one does not come back over it. Turn the still off
+with `"still": false` in the settings file if you want your own picture under it.
 
 **Fullscreen.** A monitor that shows a fullscreen window (a game, a video) keeps the
 wallpaper's last frame and does no work; when the desktop is back, the wallpaper goes on from
@@ -210,8 +227,10 @@ frame to take colours from:
 ```
 
 The hook gets `WE_LINUX_WALLPAPER` (the wallpaper's folder), `WE_LINUX_STILL` (a PNG or JPEG of
-it) and `WE_LINUX_TITLE`. What it prints goes to `$XDG_RUNTIME_DIR/we-linux/hook.log` (the last
-run's), not to the terminal the daemon was started from.
+it) and `WE_LINUX_TITLE`; on Hyprland, `HYPRLAND_INSTANCE_SIGNATURE` names the Hyprland the
+daemon talks to, for `hyprctl`, even when the daemon's environment still names one that crashed.
+What it prints goes to `$XDG_RUNTIME_DIR/we-linux/hook.log` (the last run's), not to the
+terminal the daemon was started from.
 
 <details>
 <summary>The layer rule the daemon sets on Hyprland</summary>

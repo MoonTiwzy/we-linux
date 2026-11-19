@@ -2,7 +2,7 @@
 //! answers one request a connection, written as hyprctl's arguments with `j/`
 //! for JSON; `.socket2.sock` streams `EVENT>>DATA` lines.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -17,16 +17,24 @@ use super::{Change, Compositor, Monitor, Over, Tells};
 const NAMESPACE: &str = "wepaper";
 
 pub struct Hyprland {
-    /// `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE`.
+    /// `$XDG_RUNTIME_DIR/hypr/<its instance signature>`.
     dir: PathBuf,
 }
 
 impl Hyprland {
+    /// The Hyprland of this session: the one the environment names, when it
+    /// answers. One that crashed leaves its folder and its socket behind, and
+    /// an environment that outlived it (systemd's, a terminal's) still names
+    /// it; start-hyprland starts Hyprland anew, with another signature, on the
+    /// same display. Then it is the Hyprland that answers on the session's
+    /// display, as its lock file says.
     pub fn find() -> Option<Self> {
-        let runtime = std::env::var_os("XDG_RUNTIME_DIR")?;
-        let signature = std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE")?;
-        let dir = PathBuf::from(runtime).join("hypr").join(signature);
-        dir.join(".socket.sock").exists().then_some(Self { dir })
+        let hypr = super::runtime()?.join("hypr");
+        let named = hypr.join(std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE")?);
+        if answers(&named) {
+            return Some(Self { dir: named });
+        }
+        answering_on(&hypr, &super::display_name()).map(|dir| Self { dir })
     }
 
     /// One request and its answer. Hyprland handles the socket on its main
@@ -45,11 +53,74 @@ impl Hyprland {
         serde_json::from_str(&self.ask(&format!("j/{what}"))?).ok()
     }
 
-    /// Whether this Hyprland is gone: nothing listens on its socket. It takes
-    /// the socket with it when it exits; a crash leaves the file behind.
-    fn gone(&self) -> bool {
-        UnixStream::connect(self.dir.join(".socket.sock")).is_err()
+    /// Its signature, which hyprctl is told: the environment may name a
+    /// Hyprland that went.
+    fn signature(&self) -> &std::ffi::OsStr {
+        self.dir.file_name().unwrap_or_default()
     }
+}
+
+/// Whether the Hyprland of the folder `dir` is there to answer on its socket:
+/// it is not gone (one that is busy may not take the connection at once).
+fn answers(dir: &Path) -> bool {
+    !super::socket_gone(&dir.join(".socket.sock"))
+}
+
+/// What a Hyprland's lock file says: its process and the name of its Wayland
+/// display, a line each (what `hyprctl instances` reads).
+fn lock_of(dir: &Path) -> Option<(i32, String)> {
+    let text = std::fs::read_to_string(dir.join("hyprland.lock")).ok()?;
+    let mut lines = text.lines();
+    let pid = lines.next()?.trim().parse().ok()?;
+    let display = lines.next()?.trim();
+    (!display.is_empty()).then(|| (pid, display.to_owned()))
+}
+
+/// The folders of the Hyprlands in `hypr` ($XDG_RUNTIME_DIR/hypr) that drew
+/// on `display`, as their lock files say.
+fn on_display<'a>(hypr: &Path, display: &'a str) -> impl Iterator<Item = (PathBuf, i32)> + 'a {
+    std::fs::read_dir(hypr).into_iter().flatten().flatten().filter_map(move |entry| {
+        let (pid, on) = lock_of(&entry.path())?;
+        (on == display).then(|| (entry.path(), pid))
+    })
+}
+
+/// The Hyprland in `hypr` that answers and draws on `display`.
+fn answering_on(hypr: &Path, display: &str) -> Option<PathBuf> {
+    on_display(hypr, display).map(|(dir, _)| dir).find(|dir| answers(dir))
+}
+
+/// Whether a Hyprland in `hypr` is starting on `display`. Hyprland binds its
+/// sockets first (the event socket, then the display's and the request
+/// socket), and writes its lock file half a second later: until then one
+/// that answers on either socket has no say of its display, and is taken for
+/// the one starting on the session's. Or its process runs (`alive`) and has
+/// named the display, and its socket does not answer yet.
+fn starting_on(hypr: &Path, display: &str, alive: impl Fn(i32) -> bool) -> bool {
+    std::fs::read_dir(hypr).into_iter().flatten().flatten().any(|entry| {
+        let dir = entry.path();
+        match lock_of(&dir) {
+            None => answers(&dir) || !super::socket_gone(&dir.join(".socket2.sock")),
+            Some((pid, on)) => on == display && alive(pid) && !answers(&dir),
+        }
+    })
+}
+
+/// Whether the process `pid` is a Hyprland.
+fn is_hyprland(pid: i32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|name| name.trim() == "Hyprland")
+}
+
+/// Whether the session's Hyprland is starting: the environment says the
+/// session is Hyprland's, none answers on the session's display as far as
+/// the lock files say, and one is starting (see [`starting_on`]).
+pub(super) fn starting() -> bool {
+    let Some(runtime) = super::runtime() else {
+        return false;
+    };
+    std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
+        && Hyprland::find().is_none()
+        && starting_on(&runtime.join("hypr"), &super::display_name(), is_hyprland)
 }
 
 /// The monitors of `j/monitors`: `x`, `y` are logical, `width`, `height` the
@@ -149,8 +220,10 @@ fn hyprpaper_pictures(text: &str) -> Vec<(String, PathBuf)> {
 /// gives hyprpaper 5 s to take the connection, then waits for the answer as
 /// long as it takes: a hyprpaper stuck on a picture would hold up whoever
 /// asks (the daemon's loop, the window) with it. So hyprctl has 5 s in all.
-fn hyprpaper(args: &[&str]) -> Option<String> {
+/// hyprpaper's socket is in the folder of the Hyprland of `signature`.
+fn hyprpaper(signature: &std::ffi::OsStr, args: &[&str]) -> Option<String> {
     let mut child = Command::new("hyprctl")
+        .env("HYPRLAND_INSTANCE_SIGNATURE", signature)
         .arg("hyprpaper")
         .args(args)
         .stdin(Stdio::null())
@@ -197,19 +270,29 @@ impl Compositor for Hyprland {
         Tells::ALL
     }
 
-    /// When this Hyprland goes, the daemon goes with it. A Hyprland that comes
-    /// after it (start-hyprland restarts one that crashed) has another
-    /// signature, and the daemon's environment keeps the old one: it would
-    /// stay blind to what covers the monitors, and hold the lock the new
-    /// Hyprland's own daemon needs. It does not leave by its way out, which
-    /// hands the desktop its pictures back: nothing is there to take them, and
-    /// they would be forgotten. Its renderer goes with it.
+    /// Nothing listens on its socket. It takes the socket with it when it
+    /// exits; a crash leaves the file behind.
+    fn gone(&self) -> bool {
+        !answers(&self.dir)
+    }
+
+    /// Its signature: the daemon's environment may name a Hyprland that went
+    /// (see [`Hyprland::find`]), and hyprctl in the hook is to talk to this one.
+    fn environment(&self) -> Vec<(&'static str, std::ffi::OsString)> {
+        vec![("HYPRLAND_INSTANCE_SIGNATURE", self.signature().to_owned())]
+    }
+
+    /// When this Hyprland goes, the daemon is told ([`Change::Gone`]) and
+    /// leaves (see the daemon's loop). A Hyprland that comes after it
+    /// (start-hyprland restarts one that crashed) has another signature, and
+    /// the daemon would stay blind to what covers its monitors and hold the
+    /// lock the new Hyprland's own daemon needs.
     fn watch(&self, changes: Sender<Change>) {
         let hyprland = Hyprland { dir: self.dir.clone() };
         std::thread::spawn(move || {
             loop {
                 if let Ok(stream) = UnixStream::connect(hyprland.dir.join(".socket2.sock")) {
-                    for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                    for line in super::lines(BufReader::new(stream)) {
                         match change_of(&line) {
                             // The rule is all it takes here: the surfaces stay as they are.
                             Some(Change::Layers) => hyprland.keep_on_top(),
@@ -219,11 +302,13 @@ impl Compositor for Hyprland {
                     }
                 }
                 if hyprland.gone() {
-                    crate::log::info("Hyprland went: the daemon goes with it, and its renderer");
-                    std::process::exit(0);
+                    crate::log::info("Hyprland went");
+                    let _ = changes.send(Change::Gone);
+                    return;
                 }
-                // The event socket closed and Hyprland still answers (or is not
-                // quite gone yet): look again in a moment.
+                // The event socket closed and Hyprland still answers (or cannot
+                // be told from here, or is not quite gone yet): look again in a
+                // moment.
                 std::thread::sleep(Duration::from_secs(2));
             }
         });
@@ -247,13 +332,19 @@ impl Compositor for Hyprland {
     fn show_picture(&self, image: &Path, monitor: Option<&str>) -> bool {
         let path = image.to_string_lossy();
         let target = format!("{},{path}", monitor.unwrap_or(""));
+        let told = |args: &[&str]| hyprpaper(self.signature(), args).is_some();
         // Older hyprpaper loads a picture before it shows it; newer has no `preload`.
-        (hyprpaper(&["preload", &path]).is_some() && hyprpaper(&["wallpaper", &target]).is_some())
-            || hyprpaper(&["wallpaper", &target]).is_some()
+        (told(&["preload", &path]) && told(&["wallpaper", &target])) || told(&["wallpaper", &target])
     }
 
     fn pictures(&self) -> Vec<(String, PathBuf)> {
-        hyprpaper(&["listactive"]).map(|text| hyprpaper_pictures(&text)).unwrap_or_default()
+        hyprpaper(self.signature(), &["listactive"]).map(|text| hyprpaper_pictures(&text)).unwrap_or_default()
+    }
+
+    /// hyprpaper also knows a monitor by its description ("desc:...") and
+    /// every monitor by none (""): of those it cannot be told they went.
+    fn has_monitor(&self, name: &str, monitors: &[Monitor]) -> bool {
+        name.is_empty() || name.starts_with("desc:") || super::among(name, monitors)
     }
 
     fn autostart_line(&self) -> Option<String> {
@@ -271,6 +362,7 @@ impl Compositor for Hyprland {
 #[cfg(test)]
 mod tests {
     use super::super::reply;
+    use super::super::tests::closed;
     use super::*;
 
     fn json(name: &str) -> Value {
@@ -349,8 +441,103 @@ mod tests {
         assert!(!hyprland.gone());
         // It crashed: the socket is still there, nothing listens on it.
         drop(listening);
+        closed(&dir.join(".socket.sock"));
         assert!(hyprland.gone());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A Hyprland's folder in `hypr`, as it leaves it: its lock file, and its
+    /// socket when it answers.
+    fn instance(hypr: &Path, signature: &str, lock: &str) -> PathBuf {
+        let dir = hypr.join(signature);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("hyprland.lock"), lock).unwrap();
+        dir
+    }
+
+    #[test]
+    fn the_hyprland_that_answers_on_the_display_is_found_when_the_named_one_crashed() {
+        let hypr = std::env::temp_dir().join(format!("we-linux-test-hypr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&hypr);
+        // The one that crashed: its socket is there, nothing listens on it.
+        let crashed = instance(&hypr, "a_1", "100\nwayland-1\n");
+        drop(std::os::unix::net::UnixListener::bind(crashed.join(".socket.sock")).unwrap());
+        closed(&crashed.join(".socket.sock"));
+        // A nested one on another display.
+        let nested = instance(&hypr, "b_2", "200\nwayland-2\n");
+        let _nested = std::os::unix::net::UnixListener::bind(nested.join(".socket.sock")).unwrap();
+        // A folder without a lock file, as older ones are.
+        std::fs::create_dir_all(hypr.join("c_3")).unwrap();
+        // The processes that run: the crashed one's is not among them.
+        let running = |pid| pid == 200 || pid == 300;
+        assert_eq!(answering_on(&hypr, "wayland-1"), None);
+        assert!(!starting_on(&hypr, "wayland-1", running), "a crashed one is not starting");
+        // Started anew on the same display, with another signature.
+        let anew = instance(&hypr, "d_4", "300\nwayland-1\n");
+        assert_eq!(answering_on(&hypr, "wayland-1"), None, "its socket is not there yet");
+        assert!(starting_on(&hypr, "wayland-1", running));
+        let _anew = std::os::unix::net::UnixListener::bind(anew.join(".socket.sock")).unwrap();
+        assert_eq!(answering_on(&hypr, "wayland-1"), Some(anew));
+        assert!(!starting_on(&hypr, "wayland-1", running), "it answers: it has started");
+        let _ = std::fs::remove_dir_all(&hypr);
+    }
+
+    #[test]
+    fn a_hyprland_that_answers_before_it_wrote_its_lock_file_is_starting() {
+        let hypr = std::env::temp_dir().join(format!("we-linux-test-hypr-unlocked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&hypr);
+        // The one that crashed, and a nested one on another display.
+        let crashed = instance(&hypr, "a_1", "100\nwayland-1\n");
+        drop(std::os::unix::net::UnixListener::bind(crashed.join(".socket.sock")).unwrap());
+        closed(&crashed.join(".socket.sock"));
+        let nested = instance(&hypr, "b_2", "200\nwayland-2\n");
+        let _nested = std::os::unix::net::UnixListener::bind(nested.join(".socket.sock")).unwrap();
+        let running = |pid| pid == 200 || pid == 300;
+        assert!(!starting_on(&hypr, "wayland-1", running));
+        // Started anew: its event socket answers first, then its request
+        // socket; its lock file is not written yet.
+        let anew = hypr.join("d_4");
+        std::fs::create_dir_all(&anew).unwrap();
+        let _events = std::os::unix::net::UnixListener::bind(anew.join(".socket2.sock")).unwrap();
+        assert!(starting_on(&hypr, "wayland-1", running), "the daemon waits for its sockets");
+        let _anew = std::os::unix::net::UnixListener::bind(anew.join(".socket.sock")).unwrap();
+        assert_eq!(answering_on(&hypr, "wayland-1"), None);
+        assert!(starting_on(&hypr, "wayland-1", running), "the daemon waits for its lock file");
+        // Half written.
+        std::fs::write(anew.join("hyprland.lock"), "300\n").unwrap();
+        assert_eq!(answering_on(&hypr, "wayland-1"), None);
+        assert!(starting_on(&hypr, "wayland-1", running));
+        // Written: it is the session's Hyprland.
+        std::fs::write(anew.join("hyprland.lock"), "300\nwayland-1\n").unwrap();
+        assert_eq!(answering_on(&hypr, "wayland-1"), Some(anew));
+        assert!(!starting_on(&hypr, "wayland-1", running));
+        let _ = std::fs::remove_dir_all(&hypr);
+    }
+
+    #[test]
+    fn the_hook_is_told_the_hyprland_the_daemon_found() {
+        let hyprland = Hyprland { dir: PathBuf::from("/run/user/1000/hypr/d_4") };
+        assert_eq!(hyprland.environment(), vec![("HYPRLAND_INSTANCE_SIGNATURE", "d_4".into())]);
+    }
+
+    #[test]
+    fn a_picture_of_a_monitor_hyprpaper_names_otherwise_may_be_there() {
+        let hyprland = Hyprland { dir: PathBuf::from("/run/user/1000/hypr/d_4") };
+        let monitors = [super::super::monitor("DP-1")];
+        assert!(hyprland.has_monitor("DP-1", &monitors));
+        assert!(!hyprland.has_monitor("HDMI-A-1", &monitors));
+        assert!(hyprland.has_monitor("", &monitors));
+        assert!(hyprland.has_monitor("desc:Dell Inc. DELL U2720Q ABC123", &monitors));
+    }
+
+    #[test]
+    fn a_lock_file_names_the_process_and_the_display() {
+        let hypr = std::env::temp_dir().join(format!("we-linux-test-hypr-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&hypr);
+        assert_eq!(lock_of(&instance(&hypr, "a", "3127\nwayland-1\n")), Some((3127, "wayland-1".into())));
+        assert_eq!(lock_of(&instance(&hypr, "b", "3127\n")), None);
+        assert_eq!(lock_of(&instance(&hypr, "c", "")), None);
+        let _ = std::fs::remove_dir_all(&hypr);
     }
 
     #[test]

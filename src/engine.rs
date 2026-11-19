@@ -29,21 +29,34 @@ use crate::stage::{Busy, Seen};
 
 unsafe extern "C" {
     fn prctl(option: i32, ...) -> i32;
-    fn signal(signum: i32, handler: extern "C" fn(i32)) -> usize;
+    /// `handler`: a function, or [`SIG_DFL`].
+    fn signal(signum: i32, handler: Option<extern "C" fn(i32)>) -> usize;
     fn kill(pid: i32, signal: i32) -> i32;
     fn getuid() -> u32;
+    fn getppid() -> i32;
     fn getsockopt(fd: i32, level: i32, name: i32, value: *mut std::ffi::c_void, length: *mut u32) -> i32;
 }
 const PR_SET_PDEATHSIG: i32 = 1;
 const SIGINT: i32 = 2;
 const SIGKILL: i32 = 9;
 const SIGTERM: i32 = 15;
+const ESRCH: i32 = 3;
+/// What the system does with a signal unless told otherwise (SIGTERM: the process ends).
+const SIG_DFL: Option<extern "C" fn(i32)> = None;
 const SOL_SOCKET: i32 = 1;
 /// Linux's number on x86 and ARM, which is where the renderer runs.
 const SO_PEERCRED: i32 = 17;
 
 /// The daemon was asked to go (SIGTERM, SIGINT).
 static STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The daemon's compositor went, and the daemon leaves: see [`leave_when_gone`].
+static GONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What the daemon exits with when it leaves because its compositor went (it
+/// is EX_TEMPFAIL): not 0, so that a systemd service with Restart=on-failure
+/// is started again, for the compositor that comes next.
+const GONE_STATUS: i32 = 75;
 
 extern "C" fn on_stop(_: i32) {
     STOP.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -657,8 +670,10 @@ fn output(program: &str, args: &[&str]) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// What awww, swww or the desktop's own program shows now: monitor and picture.
-fn shown_images() -> Vec<(String, PathBuf)> {
+/// What awww, swww or the desktop's own program shows: monitor and picture,
+/// and whether that is what is on the monitors now (not what a config gives
+/// the program when it starts).
+fn shown_images() -> (Vec<(String, PathBuf)>, bool) {
     // ": DP-1: 2560x1440, scale: 1, currently displaying: image: /a/b.png"
     let daemon = |text: String| -> Vec<(String, PathBuf)> {
         text.lines()
@@ -671,24 +686,82 @@ fn shown_images() -> Vec<(String, PathBuf)> {
             .collect()
     };
     if let Some(text) = output("awww", &["query"]).or_else(|| output("swww", &["query"])) {
-        return daemon(text);
+        return (daemon(text), true);
     }
-    compositor::current().pictures()
+    let desktop = compositor::current();
+    (desktop.pictures(), desktop.pictures_are_shown())
 }
 
-/// Keep what the static setter shows, once, before a still goes over it.
+/// Whether `file` is in `dir`, by any path to either: a program may name a
+/// picture by its path with the links in it resolved (/home a link to
+/// /var/home).
+fn within(file: &Path, dir: &Path) -> bool {
+    let paths = |path: &Path| [Some(path.to_owned()), path.canonicalize().ok()];
+    paths(file)
+        .into_iter()
+        .flatten()
+        .any(|file| paths(dir).into_iter().flatten().any(|dir| file.starts_with(dir)))
+}
+
+/// What the static setter shows that is no still of ours, and whether that is
+/// what is on the monitors now (see [`shown_images`]).
+fn shown_pictures() -> (Vec<(String, PathBuf)>, bool) {
+    let stills = cache_dir().join("stills");
+    let (shown, now) = shown_images();
+    (shown.into_iter().filter(|(_, image)| !within(image, &stills)).collect(), now)
+}
+
+/// The pictures the user gave the monitors since those of `kept` were kept:
+/// of what the monitors show now (`shown`, no still of ours among it), those
+/// that are none of the kept ones. A monitor that shows a kept one (its
+/// program started anew with it, or the still never went over it) was given
+/// nothing.
+fn given_since(kept: &[(String, PathBuf)], shown: &[(String, PathBuf)]) -> Vec<(String, PathBuf)> {
+    shown.iter().filter(|(_, image)| !kept.iter().any(|(_, picture)| picture == image)).cloned().collect()
+}
+
+/// Whether the picture kept for `monitor` is not to come back, as it would go
+/// over one the user gave it since (`given`): one kept for every monitor
+/// ("*") would go over all of them.
+fn superseded(monitor: &str, given: &[(String, PathBuf)]) -> bool {
+    !given.is_empty() && (monitor == "*" || given.iter().any(|(other, _)| other == monitor))
+}
+
+/// What is to be kept from before a still goes over the monitors: with
+/// nothing `kept` yet, what the static setter shows (`shown`, no still of
+/// ours among it); else what is kept, but for the monitors the user gave a
+/// picture of their own since (only what is on the monitors `now` tells),
+/// whose pictures come after it and so go over it.
+fn renewed(kept: &[(String, PathBuf)], shown: Vec<(String, PathBuf)>, now: bool) -> Vec<(String, PathBuf)> {
+    if kept.is_empty() {
+        return shown.into_iter().filter(|(_, image)| image.is_file()).collect();
+    }
+    if !now {
+        return kept.to_vec();
+    }
+    let given = given_since(kept, &shown);
+    let left = kept.iter().filter(|(monitor, _)| !superseded(monitor, &given)).cloned();
+    left.chain(given.iter().filter(|(_, image)| image.is_file()).cloned()).collect()
+}
+
+/// Keep what the static setter shows before a still goes over it. What is
+/// kept already (a still is over the monitors, or the pictures were not taken
+/// back when it went) stays, but not over a picture the user gave a monitor
+/// since: that one is kept instead.
 fn remember_images() {
-    if before_file().exists() {
+    let kept: Vec<(String, PathBuf)> = std::fs::read_to_string(before_file())
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    let (shown, now) = shown_pictures();
+    let images = renewed(&kept, shown, now);
+    // Written only when it changes: the daemon restores it anew when it does.
+    if images == kept {
         return;
     }
-    let stills = cache_dir().join("stills");
-    let images: Vec<(String, PathBuf)> = shown_images()
-        .into_iter()
-        .filter(|(_, image)| !image.starts_with(&stills) && image.is_file())
-        .collect();
-    if !images.is_empty()
-        && let Ok(text) = serde_json::to_string(&images)
-    {
+    if images.is_empty() {
+        forget_images();
+    } else if let Ok(text) = serde_json::to_string(&images) {
         let _ = std::fs::write(before_file(), text);
     }
 }
@@ -700,14 +773,69 @@ pub fn forget_images() {
 
 /// Put back the pictures that were there before the live wallpaper.
 pub fn restore_images() {
-    let Ok(text) = std::fs::read_to_string(before_file()) else {
+    // Nothing kept: nothing to ask anyone.
+    if !before_file().exists() {
+        return;
+    }
+    let desktop = compositor::current();
+    // The monitors there are, when the compositor says (not when it went).
+    let monitors = desktop.monitors();
+    // What a config gives the program says nothing of what the user gave since.
+    let (shown, now) = shown_pictures();
+    let shown = if now { shown } else { Vec::new() };
+    restore_from(
+        &before_file(),
+        |name| monitor_here(desktop, monitors.as_deref(), name),
+        &shown,
+        show_image_on,
+    );
+}
+
+/// Whether the monitor `name` that a picture is kept for is one of
+/// `monitors`, the monitors there are, as `desktop` names them; when they are
+/// not known (None or none), it may be. "*" is every monitor.
+fn monitor_here(
+    desktop: &dyn compositor::Compositor,
+    monitors: Option<&[compositor::Monitor]>,
+    name: &str,
+) -> bool {
+    name == "*"
+        || monitors
+            .filter(|monitors| !monitors.is_empty())
+            .is_none_or(|monitors| desktop.has_monitor(name, monitors))
+}
+
+/// Show the pictures `file` keeps with `show` (picture, monitor or all), on
+/// the monitors `here` says there are. They are forgotten once one of them is
+/// back, or when none of them can come back: gone from the disk, of a monitor
+/// that is not there any more (a laptop taken off its dock), which would stay
+/// kept for as long as it is away, or of a monitor the user gave a picture
+/// of their own since (`shown`: what the monitors show now, no still of ours
+/// among it), which they would go over. While nothing takes them (the static
+/// wallpaper program is not running yet, or went with the compositor), they
+/// are kept for the next time.
+fn restore_from(
+    file: &Path,
+    here: impl Fn(&str) -> bool,
+    shown: &[(String, PathBuf)],
+    mut show: impl FnMut(&Path, Option<&str>) -> bool,
+) {
+    let Ok(text) = std::fs::read_to_string(file) else {
         return;
     };
-    forget_images();
     let images: Vec<(String, PathBuf)> = serde_json::from_str(&text).unwrap_or_default();
-    for (monitor, image) in images.iter().filter(|(_, image)| image.is_file()) {
-        let monitor = (monitor != "*").then_some(monitor.as_str());
-        show_image_on(image, monitor);
+    let given = given_since(&images, shown);
+    let mut there = false;
+    let mut back = false;
+    for (monitor, image) in images
+        .iter()
+        .filter(|(monitor, image)| here(monitor) && !superseded(monitor, &given) && image.is_file())
+    {
+        there = true;
+        back |= show(image, (monitor != "*").then_some(monitor.as_str()));
+    }
+    if back || !there {
+        let _ = std::fs::remove_file(file);
     }
 }
 
@@ -723,7 +851,8 @@ fn hook(settings: &Settings, wallpaper: &Path, still: Option<&Path>) {
     }
     let title = project(wallpaper)["title"].as_str().unwrap_or("").to_owned();
     let _ = std::fs::create_dir_all(runtime_dir());
-    match run_hook(&settings.hook, wallpaper, still, &title, &hook_log()) {
+    let environment = compositor::current().environment();
+    match run_hook(&settings.hook, wallpaper, still, &title, &environment, &hook_log()) {
         Ok(status) if status.success() => log::info("the hook ran"),
         Ok(status) => log::warn(format!("the hook ended with {status}: what it said is in hook.log")),
         Err(why) => log::warn(format!("the hook did not start: {why}")),
@@ -732,18 +861,21 @@ fn hook(settings: &Settings, wallpaper: &Path, still: Option<&Path>) {
 
 /// Run a hook with its output in `log`, started anew: what it says is not for
 /// the terminal the daemon was started from, where it would land at every
-/// change of the wallpaper.
+/// change of the wallpaper. `environment` is what the compositor has it find
+/// there (see [`compositor::Compositor::environment`]).
 fn run_hook(
     command: &str,
     wallpaper: &Path,
     still: Option<&Path>,
     title: &str,
+    environment: &[(&str, std::ffi::OsString)],
     log: &Path,
 ) -> std::io::Result<std::process::ExitStatus> {
     let out = std::fs::File::create(log)?;
     Command::new("sh")
         .arg("-c")
         .arg(command)
+        .envs(environment.iter().map(|(name, value)| (name, value)))
         .env("WE_LINUX_WALLPAPER", wallpaper)
         .env("WE_LINUX_STILL", still.unwrap_or(Path::new("")))
         .env("WE_LINUX_TITLE", title)
@@ -861,7 +993,7 @@ fn busy() -> Option<(Busy, Duration)> {
 
 /// Whether a daemon runs: it holds its lock.
 pub fn daemon_running() -> bool {
-    lock_file().is_some_and(|lock| lock.try_lock().is_err())
+    lock_file().is_some_and(|lock| take(&lock) == Ok(false))
 }
 
 /// What the daemon and the renderer say now, for the window and `we-linux
@@ -906,44 +1038,76 @@ fn fresh_errors() -> Vec<(PathBuf, String)> {
     if modified(errors_file()) >= modified(desktop::desktop_file()) { errors() } else { Vec::new() }
 }
 
-fn lock_file() -> Option<std::fs::File> {
-    std::fs::create_dir_all(runtime_dir()).ok()?;
-    std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(runtime_dir().join("daemon.lock"))
-        .ok()
+fn lock_path() -> PathBuf {
+    runtime_dir().join("daemon.lock")
 }
 
-/// Start `we-linux daemon` on its own unless one runs already.
-/// The daemon that runs, if one does: its process and the program it is, as
-/// the system has it (a program replaced on the disk reads "... (deleted)").
-fn running_daemon() -> Option<(i32, PathBuf)> {
-    let own = std::process::id() as i32;
-    std::fs::read_dir("/proc").ok()?.flatten().find_map(|entry| {
-        let pid: i32 = entry.file_name().to_str()?.parse().ok()?;
-        let line = std::fs::read(entry.path().join("cmdline")).ok()?;
-        let mut words = line.split(|byte| *byte == 0);
-        let program = String::from_utf8_lossy(words.next()?).into_owned();
-        let is_daemon = pid != own
-            && Path::new(&program)
-                .file_name()
-                .is_some_and(|name| name.to_string_lossy().contains("we-linux"))
-            && words.next() == Some(b"daemon".as_slice());
-        if !is_daemon {
-            return None;
+fn lock_file() -> Option<std::fs::File> {
+    std::fs::create_dir_all(runtime_dir()).ok()?;
+    std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(lock_path()).ok()
+}
+
+/// Take the daemon's lock when it is free: whether it was (it is held then
+/// while `lock` is open), or why it cannot be taken at all (a filesystem
+/// without locks).
+fn take(lock: &std::fs::File) -> Result<bool, String> {
+    match lock.try_lock() {
+        Ok(()) => Ok(true),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(false),
+        Err(std::fs::TryLockError::Error(e)) => {
+            Err(format!("the daemon's lock ({}) cannot be taken: {e}", lock_path().display()))
         }
-        // The one that holds this runtime directory's lock: a second daemon with a
-        // directory of its own (a test's) is nobody's to replace.
-        let lock = runtime_dir().join("daemon.lock");
-        let holds = std::fs::read_dir(entry.path().join("fd"))
-            .ok()?
+    }
+}
+
+/// The processes the kernel's table of locks (/proc/locks) says hold a lock
+/// of the whole file (flock, which [`take`] takes) on the file of `inode`. A
+/// process waiting for the lock is not among them, though it has the file
+/// open too.
+fn flock_holders(locks: &str, inode: u64) -> Vec<i32> {
+    locks
+        .lines()
+        .filter_map(|line| {
+            // "1: FLOCK  ADVISORY  WRITE 2967 00:1a:4513 0 EOF": a process blocked
+            // on a lock has its line with "->" before the kind.
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            let [_, "FLOCK", _, _, pid, file, ..] = fields.as_slice() else {
+                return None;
+            };
+            let pid: i32 = pid.parse().ok().filter(|pid| *pid > 0)?;
+            (file.rsplit(':').next()?.parse::<u64>().ok()? == inode).then_some(pid)
+        })
+        .collect()
+}
+
+/// The process that holds this runtime directory's daemon lock: of those the
+/// kernel names for the lock file's inode, the one that has the very file
+/// open (the same number may be another filesystem's inode).
+fn lock_holder() -> Option<i32> {
+    use std::os::unix::fs::MetadataExt;
+    let lock = lock_path().canonicalize().ok()?;
+    let inode = std::fs::metadata(&lock).ok()?.ino();
+    let locks = std::fs::read_to_string("/proc/locks").ok()?;
+    flock_holders(&locks, inode).into_iter().find(|pid| {
+        std::fs::read_dir(format!("/proc/{pid}/fd"))
+            .into_iter()
             .flatten()
-            .any(|fd| std::fs::read_link(fd.path()).is_ok_and(|file| file == lock));
-        // Another user's process does not show its program: not ours either.
-        holds.then(|| std::fs::read_link(entry.path().join("exe")).ok()).flatten().map(|exe| (pid, exe))
+            .flatten()
+            .any(|fd| std::fs::read_link(fd.path()).is_ok_and(|file| file == lock))
     })
+}
+
+/// The program of the process `pid` when it is a `we-linux daemon`, as the
+/// system has it (a program replaced on the disk reads "... (deleted)").
+fn daemon_program(pid: i32) -> Option<PathBuf> {
+    let line = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let mut words = line.split(|byte| *byte == 0);
+    let program = String::from_utf8_lossy(words.next()?).into_owned();
+    let is_daemon =
+        Path::new(&program).file_name().is_some_and(|name| name.to_string_lossy().contains("we-linux"))
+            && words.next() == Some(b"daemon".as_slice());
+    // Another user's process does not show its program: not ours either.
+    is_daemon.then(|| std::fs::read_link(format!("/proc/{pid}/exe")).ok()).flatten()
 }
 
 /// Whether the daemon that runs is to make way for this program: it is another
@@ -955,31 +1119,44 @@ fn outdated(running: &Path, own: &Path) -> bool {
     running != own
 }
 
+/// Start `we-linux daemon` on its own unless one of this program runs already:
+/// one of another program is asked to make way first.
 pub fn ensure_daemon() -> Result<(), String> {
     let Some(lock) = lock_file() else {
         return Err("no runtime directory".into());
     };
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    if lock.try_lock().is_err() {
-        let Some((pid, running)) = running_daemon() else {
-            return Ok(());
-        };
-        if !outdated(&running, &exe) {
-            return Ok(());
+    let own = std::process::id() as i32;
+    let since = Instant::now();
+    // The daemon asked to make way, and when.
+    let mut asked: Option<(i32, Instant)> = None;
+    while !take(&lock)? {
+        match lock_holder().map(|holder| (holder, daemon_program(holder))) {
+            // This process is the daemon: its playlist sets the next wallpaper.
+            Some((holder, Some(_))) if holder == own => return Ok(()),
+            Some((_, Some(running))) if !outdated(&running, &exe) => return Ok(()),
+            Some((holder, Some(running))) if asked.is_none_or(|(pid, _)| pid != holder) => {
+                log::info(format!(
+                    "the daemon that runs is another program ({}): it makes way for {}",
+                    running.display(),
+                    exe.display()
+                ));
+                // It stops its renderer and leaves on SIGTERM; the lock is free when it has.
+                unsafe { kill(holder, SIGTERM) };
+                asked = Some((holder, Instant::now()));
+            }
+            // Asked already; or no daemon holds it, but a window or the command
+            // line (this process too) looking whether one runs, for a moment; or
+            // it went between the two looks.
+            _ => {}
         }
-        log::info(format!(
-            "the daemon that runs is another program ({}): it makes way for {}",
-            running.display(),
-            exe.display()
-        ));
-        // It stops its renderer and leaves on SIGTERM; the lock is free when it has.
-        unsafe { kill(pid, SIGTERM) };
-        let since = Instant::now();
-        while lock.try_lock().is_err() {
-            if since.elapsed() > Duration::from_secs(8) {
+        match asked {
+            Some((_, when)) if when.elapsed() > Duration::from_secs(8) => {
                 return Err("the old daemon does not stop".into());
             }
-            std::thread::sleep(Duration::from_millis(100));
+            // Held, and not by a daemon to replace: one runs (as far as can be told).
+            None if since.elapsed() > Duration::from_secs(1) => return Ok(()),
+            _ => std::thread::sleep(Duration::from_millis(50)),
         }
     }
     drop(lock);
@@ -1062,14 +1239,29 @@ fn spawn(settings: &Settings) -> Result<Child, String> {
     }
     command.arg("--set").arg(format!("layer={}", compositor::current().layer()));
     command.stdin(Stdio::null()).stdout(log.try_clone().map_err(|e| e.to_string())?).stderr(log);
-    // The renderer goes when the daemon does, however that ends.
+    die_with(&mut command, std::process::id() as i32);
+    command.spawn().map_err(|e| e.to_string())
+}
+
+/// Have the process of `command` go when its parent, this process of pid
+/// `parent`, does, however that ends (SIGTERM). The kernel tells a child of
+/// its parent going only when the child asked before: a parent gone sooner
+/// (the daemon leaves from another thread while its loop starts a renderer)
+/// leaves the child with another parent by then, and it does not start. Until
+/// it runs its program, the child has the daemon's own handler of SIGTERM,
+/// which would take the signal and let it run on: SIGTERM ends it from the
+/// first.
+fn die_with(command: &mut Command, parent: i32) {
     unsafe {
-        command.pre_exec(|| {
+        command.pre_exec(move || {
+            signal(SIGTERM, SIG_DFL);
             prctl(PR_SET_PDEATHSIG, SIGTERM);
+            if getppid() != parent {
+                return Err(std::io::Error::from_raw_os_error(ESRCH));
+            }
             Ok(())
         });
     }
-    command.spawn().map_err(|e| e.to_string())
 }
 
 /// The renderer's log: what it says on stderr.
@@ -1117,13 +1309,16 @@ static RENDERER: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::ne
 /// killed from outside the loop, and how long after that it exits anyway.
 const GRACE: Duration = Duration::from_secs(2);
 
-/// The daemon's loop sees that it was told to go between two requests to the
-/// renderer, and a request may take long. This thread wakes it at once, kills
-/// the renderer when the loop is not done after [`GRACE`] (the request it
-/// waits on fails then), and leaves for it after another.
+/// The daemon's loop sees that it was told to go (or that its compositor
+/// went) between two requests to the renderer, and a request may take long.
+/// This thread wakes it at once, kills the renderer when the loop is not done
+/// after [`GRACE`] (the request it waits on fails then), and leaves for it
+/// after another.
 fn watch_stop(wake: Sender<()>) {
     std::thread::spawn(move || {
-        while !STOP.load(std::sync::atomic::Ordering::Relaxed) {
+        while !STOP.load(std::sync::atomic::Ordering::Relaxed)
+            && !GONE.load(std::sync::atomic::Ordering::Relaxed)
+        {
             std::thread::sleep(Duration::from_millis(100));
         }
         let _ = wake.send(());
@@ -1135,10 +1330,70 @@ fn watch_stop(wake: Sender<()>) {
             }
         }
         std::thread::sleep(GRACE);
+        put_down_renderer();
+        exit_daemon();
+    });
+}
+
+/// Before the daemon goes: nothing is to listen on the renderer's socket, so
+/// the lock goes after the renderer and never before. One that hung and is
+/// deaf to SIGTERM would draw on next to the next daemon's.
+fn put_down_renderer() {
+    if !put_down(&socket(), Duration::from_millis(500)) {
+        log::error("the renderer does not stop");
+    }
+}
+
+/// The daemon's last step, its renderer gone. Told to go, it hands the desktop
+/// its pictures back. Its compositor gone, there is no desktop to take them:
+/// they are kept for the next daemon, and the exit says why it left.
+fn exit_daemon() -> ! {
+    let gone = GONE.load(std::sync::atomic::Ordering::Relaxed);
+    if !gone {
         restore_images();
         compositor::current().leave();
-        std::process::exit(0);
+    }
+    let stopped = STOP.load(std::sync::atomic::Ordering::Relaxed);
+    std::process::exit(if gone && !stopped { GONE_STATUS } else { 0 });
+}
+
+/// The compositor went, and the monitors with it: the daemon leaves, and the
+/// daemon of the compositor that comes next takes over (a systemd service is
+/// started again: see [`GONE_STATUS`]). A device is no monitor of the
+/// compositor: while one is on with a wallpaper, the daemon stays for it, and
+/// leaves once a compositor answers again, in good time for that
+/// compositor's daemon, which waits 5 s for the lock. A compositor that
+/// answered as this one went is none that came after it, unless it answers
+/// on the session's display, which was `ours` while this one was there.
+fn leave_when_gone(wake: Sender<()>, ours: Option<compositor::Socket>) {
+    std::thread::spawn(move || {
+        let mut before = compositor::Answering::now(ours.as_ref());
+        let mut said = false;
+        loop {
+            let answers = before.one_came();
+            if answers || !device_shows() {
+                log::info(if answers && said {
+                    "a compositor answers again: the daemon leaves for its daemon"
+                } else {
+                    "the compositor went: the renderer stops, and the daemon leaves for the next compositor's"
+                });
+                GONE.store(true, std::sync::atomic::Ordering::Relaxed);
+                let _ = wake.send(());
+                return;
+            }
+            if !said {
+                log::info("the compositor went: the daemon stays for the devices until a compositor answers");
+                said = true;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
     });
+}
+
+/// Whether a device is on with a wallpaper to show.
+fn device_shows() -> bool {
+    let desktop = Desktop::load();
+    desktop::devices().iter().any(|device| device.enabled && wanted(&desktop, &device.name).is_some())
 }
 
 /// Waits for a renderer just started to answer and to have found the
@@ -1176,15 +1431,19 @@ pub fn errors() -> Vec<(PathBuf, String)> {
         .unwrap_or_default()
 }
 
-/// What the compositor says: the loop wakes, and the renderer makes its
-/// surfaces anew when another layer may now be over them.
-fn watch_compositor(wake: Sender<()>) {
+/// What the compositor says: the loop wakes, the renderer makes its surfaces
+/// anew when another layer may now be over them, and the daemon leaves when
+/// the compositor went. `display` is the session's display as the compositor
+/// answers on it now.
+fn watch_compositor(wake: Sender<()>, display: Option<compositor::Socket>) {
     let (changes, heard) = channel();
     compositor::current().watch(changes);
     std::thread::spawn(move || {
         for change in heard {
-            if change == Change::Layers {
-                RESTACK.store(true, std::sync::atomic::Ordering::Relaxed);
+            match change {
+                Change::Layers => RESTACK.store(true, std::sync::atomic::Ordering::Relaxed),
+                Change::Gone => leave_when_gone(wake.clone(), display.clone()),
+                Change::Covers => {}
             }
             if wake.send(()).is_err() {
                 return;
@@ -1217,17 +1476,32 @@ fn watch_files(wake: Sender<()>) {
 pub fn run_daemon() {
     log::as_role("daemon");
     let Some(lock) = lock_file() else { return };
-    // The daemon of a Hyprland that went leaves by itself, within seconds;
-    // the next Hyprland's daemon may start before that, and waits for it.
+    // The daemon of a compositor that went leaves by itself, within seconds;
+    // the next compositor's daemon may start before that, and waits for it.
     let since = Instant::now();
-    while lock.try_lock().is_err() {
-        if since.elapsed() > Duration::from_secs(5) {
-            eprintln!("we-linux: the daemon is running already");
-            return;
+    loop {
+        match take(&lock) {
+            Ok(true) => break,
+            Ok(false) if since.elapsed() < Duration::from_secs(5) => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Ok(false) => {
+                eprintln!("we-linux: the daemon is running already");
+                return;
+            }
+            Err(why) => {
+                eprintln!("we-linux: {why}");
+                return;
+            }
         }
-        std::thread::sleep(Duration::from_millis(100));
     }
+    // Started anew by systemd when its compositor went, it may be here before
+    // the next compositor answers.
+    compositor::settle(Duration::from_secs(10));
     let side = compositor::current();
+    // The session's display as this compositor has it: a compositor that takes
+    // it after this one went is told from this one by its socket.
+    let display = compositor::session_display();
     log::info(format!(
         "started: we-linux {} on {}; compositor: {} {}; renderer: {}",
         env!("CARGO_PKG_VERSION"),
@@ -1236,6 +1510,14 @@ pub fn run_daemon() {
         side.version().unwrap_or_else(|| "(no version said)".into()),
         bin(ENGINE).map_or_else(|| "NOT FOUND".to_owned(), |p| p.display().to_string())
     ));
+    // No compositor came in that time: the daemon leaves as one whose
+    // compositor went (see `leave_when_gone`), before it starts anything. It
+    // runs no hook and no renderer, and the renderer's log of before stays for
+    // `we-linux logs`; systemd starts it again a moment later.
+    if side.gone() && !device_shows() {
+        log::info("no compositor answers: the daemon leaves for the next compositor's");
+        std::process::exit(GONE_STATUS);
+    }
     let (wake, woken) = channel();
     // Until something changes; a renderer that died is looked at again in a
     // few seconds.
@@ -1245,7 +1527,7 @@ pub fn run_daemon() {
         while woken.try_recv().is_ok() {}
     };
     let _ = WAKE.set(wake.clone());
-    watch_compositor(wake.clone());
+    watch_compositor(wake.clone(), display);
     watch_stop(wake.clone());
     watch_files(wake);
     std::thread::spawn(desktop::run_playlist);
@@ -1265,6 +1547,9 @@ pub fn run_daemon() {
     // What the errors file holds (None: not known, it is written anew). The
     // file is written when this changes only: its time says how new it is.
     let mut reported: Option<String> = None;
+    // When the pictures of before were last put back: the desktop and what was
+    // kept, as their files' times were then.
+    let mut restored = None;
     // What an earlier daemon left: a renderer that outlived it (one that hung
     // does not go with it) is stopped before its socket goes, else it would
     // draw and play next to ours.
@@ -1289,31 +1574,31 @@ pub fn run_daemon() {
     let mut devices_refused = false;
     let mut pictures_told: HashMap<String, String> = HashMap::new();
     unsafe {
-        signal(SIGTERM, on_stop);
-        signal(SIGINT, on_stop);
+        signal(SIGTERM, Some(on_stop));
+        signal(SIGINT, Some(on_stop));
     }
     loop {
         // Told to go: the renderer stops and the desktop gets its picture back.
-        if STOP.load(std::sync::atomic::Ordering::Relaxed) {
-            log::info("told to go: the renderer stops and the desktop gets its picture back");
+        // The compositor went: the renderer stops, and the next compositor's
+        // daemon takes over (see `exit_daemon`).
+        let stopped = STOP.load(std::sync::atomic::Ordering::Relaxed);
+        if stopped || GONE.load(std::sync::atomic::Ordering::Relaxed) {
+            if stopped {
+                log::info("told to go: the renderer stops and the desktop gets its picture back");
+            }
             set_busy(None);
             if let Some((mut child, _)) = renderer.take() {
                 stop(&mut child);
             }
             RENDERER.store(0, std::sync::atomic::Ordering::Relaxed);
-            restore_images();
-            compositor::current().leave();
-            std::process::exit(0);
+            put_down_renderer();
+            exit_daemon();
         }
         let desktop = Desktop::load();
         let settings = Settings::load();
         let devices = desktop::devices();
         let live = desktop.wallpaper.as_ref().is_some_and(|p| p.is_dir())
             || desktop.outputs.values().any(|p| p.is_dir());
-        // Nothing live any more: what was there before comes back.
-        if desktop.wallpaper.is_none() && desktop.outputs.is_empty() {
-            restore_images();
-        }
         if desktop.wallpaper != announced {
             announced = desktop.wallpaper.clone();
             if let Some(wallpaper) = &announced {
@@ -1330,6 +1615,18 @@ pub fn run_daemon() {
             down = None;
             hung = None;
             reported = None;
+        }
+        // Nothing live any more: what was there before comes back. Once for
+        // each change of the desktop or of what is kept: pictures nothing
+        // took stay kept for the next time, not handed over every round.
+        let kept = std::fs::metadata(before_file()).and_then(|m| m.modified()).ok();
+        if desktop.wallpaper.is_none()
+            && desktop.outputs.is_empty()
+            && kept.is_some()
+            && restored != Some((desktop_stamp, kept))
+        {
+            restored = Some((desktop_stamp, kept));
+            restore_images();
         }
         let covered: Vec<(String, Over)> = compositor::current().over().unwrap_or_default();
         let sound = settings.playback_audio != "run"
@@ -1812,11 +2109,13 @@ pub fn summary() -> String {
     out.push(format!("wallpaper engine assets: {}", found(crate::library::assets())));
     out.push(format!("wallpapers on disk: {}", crate::library::installed().len()));
     out.push(String::new());
-    let lock = lock_file();
-    let daemon = lock.is_some_and(|l| l.try_lock().is_err());
     out.push(format!(
         "daemon: {}",
-        if daemon { "running" } else { "NOT RUNNING (start it: we-linux daemon)" }
+        match lock_file().map(|lock| take(&lock)) {
+            Some(Ok(false)) => "running".to_owned(),
+            Some(Err(why)) => format!("NOT RUNNING ({why})"),
+            _ => "NOT RUNNING (start it: we-linux daemon)".to_owned(),
+        }
     ));
     out.push(format!(
         "wallpaper: {}",
@@ -1933,7 +2232,7 @@ mod tests {
         if std::env::var_os(DEAF).is_some() {
             extern "C" fn ignore(_: i32) {}
             unsafe {
-                signal(SIGTERM, ignore);
+                signal(SIGTERM, Some(ignore));
             }
         }
         let listener = UnixListener::bind(socket).unwrap();
@@ -2059,8 +2358,278 @@ mod tests {
         let dir = scratch("hook");
         let log = dir.join("hook.log");
         std::fs::write(&log, "what the hook of before said\n").unwrap();
-        let status = run_hook(r#"echo "$WE_LINUX_TITLE"; echo oops >&2"#, &dir, None, "Rain", &log).unwrap();
+        let status =
+            run_hook(r#"echo "$WE_LINUX_TITLE"; echo oops >&2"#, &dir, None, "Rain", &[], &log).unwrap();
         assert!(status.success());
         assert_eq!(std::fs::read_to_string(&log).unwrap(), "Rain\noops\n");
+    }
+
+    #[test]
+    fn the_hook_talks_to_the_compositor_the_daemon_found() {
+        let dir = scratch("hook-environment");
+        let log = dir.join("hook.log");
+        let environment = [("HYPRLAND_INSTANCE_SIGNATURE", "d_4".into())];
+        let status =
+            run_hook(r#"echo "$HYPRLAND_INSTANCE_SIGNATURE""#, &dir, None, "", &environment, &log).unwrap();
+        assert!(status.success());
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "d_4\n");
+    }
+
+    /// Monitors of these names there are, as a compositor that names them
+    /// by their connectors says.
+    fn on<'a>(names: &'a [&str]) -> impl Fn(&str) -> bool + 'a {
+        move |monitor| monitor == "*" || names.contains(&monitor)
+    }
+
+    #[test]
+    fn the_pictures_of_before_are_kept_until_one_is_back() {
+        let dir = scratch("before");
+        let (a, b) = (dir.join("a.png"), dir.join("b.png"));
+        std::fs::write(&a, "").unwrap();
+        std::fs::write(&b, "").unwrap();
+        let file = dir.join("before.json");
+        let kept = serde_json::to_string(&[("DP-1", &a), ("*", &b)]).unwrap();
+        std::fs::write(&file, &kept).unwrap();
+        // Nothing takes them (the compositor went, and its wallpaper program;
+        // the monitors are not known then).
+        let mut asked = Vec::new();
+        restore_from(
+            &file,
+            |_| true,
+            &[],
+            |image, monitor| {
+                asked.push((image.to_owned(), monitor.map(str::to_owned)));
+                false
+            },
+        );
+        assert_eq!(asked, vec![(a.clone(), Some("DP-1".to_owned())), (b.clone(), None)]);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), kept, "kept for the next time");
+        // One of them is back: they are forgotten.
+        restore_from(&file, on(&["DP-1"]), &[], |image, _| image == b);
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn pictures_that_cannot_come_back_are_forgotten() {
+        let dir = scratch("before-gone");
+        let file = dir.join("before.json");
+        std::fs::write(&file, serde_json::to_string(&[("DP-1", dir.join("deleted.png"))]).unwrap()).unwrap();
+        restore_from(&file, |_| true, &[], |_, _| panic!("a picture that is not there is not shown"));
+        assert!(!file.exists());
+        std::fs::write(&file, "not json").unwrap();
+        restore_from(&file, |_| true, &[], |_, _| true);
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn pictures_of_a_monitor_that_is_not_there_any_more_are_forgotten() {
+        let dir = scratch("before-undocked");
+        let (home, laptop) = (dir.join("home.png"), dir.join("laptop.png"));
+        std::fs::write(&home, "").unwrap();
+        std::fs::write(&laptop, "").unwrap();
+        let file = dir.join("before.json");
+        // Off the dock: the docked monitor's picture cannot come back, and would
+        // stay kept for as long as it is away.
+        std::fs::write(&file, serde_json::to_string(&[("HDMI-A-1", &home)]).unwrap()).unwrap();
+        restore_from(&file, on(&["eDP-1"]), &[], |_, _| panic!("no monitor to show it on"));
+        assert!(!file.exists());
+        // With one that is there, which nothing takes now: kept, the docked
+        // monitor's too.
+        let kept = serde_json::to_string(&[("HDMI-A-1", &home), ("eDP-1", &laptop)]).unwrap();
+        std::fs::write(&file, &kept).unwrap();
+        let mut asked = Vec::new();
+        restore_from(&file, on(&["eDP-1"]), &[], |image, monitor| {
+            asked.push((image.to_owned(), monitor.map(str::to_owned)));
+            false
+        });
+        assert_eq!(asked, vec![(laptop.clone(), Some("eDP-1".to_owned()))]);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), kept);
+        // One for every monitor goes on the monitors there are.
+        std::fs::write(&file, serde_json::to_string(&[("*", &laptop)]).unwrap()).unwrap();
+        restore_from(&file, on(&["eDP-1"]), &[], |image, monitor| image == laptop && monitor.is_none());
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn plasmas_pictures_are_of_its_screens_by_number() {
+        let plasma = compositor::plasma();
+        let monitors = [compositor::monitor("DP-1")];
+        let here = |name: &str| monitor_here(&*plasma, Some(&monitors), name);
+        assert!(here("0") && here("DP-1") && here("*"));
+        assert!(!here("1") && !here("HDMI-A-1"));
+        // Monitors not known: any may be there.
+        assert!(monitor_here(&*plasma, None, "HDMI-A-1"));
+        assert!(monitor_here(&*plasma, Some(&[]), "HDMI-A-1"));
+
+        // Plasma's own picture, kept by its screen's number on a monitor
+        // Wayland names DP-1, comes back there; kept while nothing takes it.
+        let dir = scratch("before-plasma");
+        let picture = dir.join("plasma.jpg");
+        std::fs::write(&picture, "").unwrap();
+        let file = dir.join("before.json");
+        std::fs::write(&file, serde_json::to_string(&[("0", &picture)]).unwrap()).unwrap();
+        let mut asked = Vec::new();
+        restore_from(&file, here, &[], |image, monitor| {
+            asked.push((image.to_owned(), monitor.map(str::to_owned)));
+            false
+        });
+        assert_eq!(asked, vec![(picture.clone(), Some("0".to_owned()))]);
+        assert!(file.exists(), "kept for the next time");
+        restore_from(&file, here, &[], |image, monitor| image == picture && monitor == Some("0"));
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn a_picture_the_user_gave_a_monitor_since_is_not_gone_over() {
+        let dir = scratch("before-given");
+        let (a, a2, own, still) =
+            (dir.join("a.png"), dir.join("a2.png"), dir.join("own.png"), dir.join("still.png"));
+        for picture in [&a, &a2, &own, &still] {
+            std::fs::write(picture, "").unwrap();
+        }
+        let file = dir.join("before.json");
+        let pair = |monitor: &str, picture: &Path| (monitor.to_owned(), picture.to_owned());
+        // Kept when nothing took them; the user set a picture on DP-1 since.
+        std::fs::write(&file, serde_json::to_string(&[("DP-1", &a)]).unwrap()).unwrap();
+        restore_from(&file, |_| true, &[pair("DP-1", &own)], |_, _| panic!("not over the user's own"));
+        assert!(!file.exists(), "it cannot come back");
+        // On DP-1 only: DP-2's comes back.
+        std::fs::write(&file, serde_json::to_string(&[("DP-1", &a), ("DP-2", &a2)]).unwrap()).unwrap();
+        let mut asked = Vec::new();
+        restore_from(
+            &file,
+            |_| true,
+            &[pair("DP-1", &own)],
+            |image, monitor| {
+                asked.push((image.to_owned(), monitor.map(str::to_owned)));
+                true
+            },
+        );
+        assert_eq!(asked, vec![(a2.clone(), Some("DP-2".to_owned()))]);
+        assert!(!file.exists());
+        // One for every monitor would go over it too.
+        std::fs::write(&file, serde_json::to_string(&[("*", &a)]).unwrap()).unwrap();
+        restore_from(&file, |_| true, &[pair("DP-1", &own)], |_, _| panic!("not over the user's own"));
+        assert!(!file.exists());
+        // A monitor that shows a kept picture was given nothing: its program
+        // started anew with it.
+        std::fs::write(&file, serde_json::to_string(&[("DP-1", &a)]).unwrap()).unwrap();
+        let mut asked = 0;
+        restore_from(
+            &file,
+            |_| true,
+            &[pair("DP-1", &a)],
+            |_, _| {
+                asked += 1;
+                true
+            },
+        );
+        assert_eq!(asked, 1);
+        assert!(!file.exists());
+
+        // Remembering: nothing kept yet, what is shown (and on the disk) is.
+        let gone = dir.join("deleted.png");
+        assert_eq!(renewed(&[], vec![pair("DP-1", &a), pair("DP-2", &gone)], true), vec![pair("DP-1", &a)]);
+        let kept = vec![pair("DP-1", &a), pair("DP-2", &a2)];
+        // What is kept stays while the still is over the monitors (nothing
+        // else is shown), or while only a config says what they show.
+        assert_eq!(renewed(&kept, Vec::new(), true), kept);
+        assert_eq!(renewed(&kept, vec![pair("DP-1", &own)], false), kept);
+        assert_eq!(renewed(&kept, vec![pair("DP-1", &a)], true), kept);
+        // A picture the user gave since takes the place of the kept one, and
+        // comes after one kept for every monitor.
+        assert_eq!(
+            renewed(&kept, vec![pair("DP-1", &own)], true),
+            vec![pair("DP-2", &a2), pair("DP-1", &own)]
+        );
+        assert_eq!(
+            renewed(&[pair("*", &a)], vec![pair("DP-1", &own), pair("DP-2", &a)], true),
+            vec![pair("DP-1", &own)]
+        );
+    }
+
+    #[test]
+    fn a_still_is_known_by_any_path_to_it() {
+        let dir = scratch("within");
+        let stills = dir.join("cache/stills");
+        std::fs::create_dir_all(&stills).unwrap();
+        std::fs::write(stills.join("a.png"), "").unwrap();
+        // /home a link to /var/home.
+        std::os::unix::fs::symlink(dir.join("cache"), dir.join("link")).unwrap();
+        assert!(within(&stills.join("a.png"), &stills));
+        assert!(within(&dir.join("link/stills/a.png"), &stills));
+        assert!(within(&stills.join("a.png"), &dir.join("link/stills")));
+        assert!(!within(&dir.join("cache/a.png"), &stills));
+        assert!(!within(Path::new("/nowhere/stills/a.png"), &stills));
+    }
+
+    #[test]
+    fn the_kernel_names_who_holds_a_lock_and_not_who_waits() {
+        let locks = "1: FLOCK  ADVISORY  WRITE 2967 00:1a:4513 0 EOF\n\
+                     1: -> FLOCK  ADVISORY  WRITE 3001 00:1a:4513 0 EOF\n\
+                     2: POSIX  ADVISORY  WRITE 812 00:1a:4513 0 EOF\n\
+                     3: OFDLCK ADVISORY  READ  -1 00:05:4513 0 EOF\n\
+                     4: FLOCK  ADVISORY  WRITE 777 fd:01:99 0 EOF\n";
+        assert_eq!(flock_holders(locks, 4513), vec![2967]);
+        assert_eq!(flock_holders(locks, 99), vec![777]);
+        assert!(flock_holders(locks, 1).is_empty());
+    }
+
+    #[test]
+    fn a_lock_this_process_holds_is_its_own_in_the_kernels_table() {
+        use std::os::unix::fs::MetadataExt;
+        let path = scratch("flock").join("daemon.lock");
+        let lock = std::fs::File::create(&path).unwrap();
+        // Waiting for it: the file is open, nothing is held.
+        let waiting = std::fs::File::open(&path).unwrap();
+        let inode = std::fs::metadata(&path).unwrap().ino();
+        let table = || std::fs::read_to_string("/proc/locks").unwrap();
+        assert!(flock_holders(&table(), inode).is_empty());
+        assert_eq!(take(&lock), Ok(true));
+        assert_eq!(take(&waiting), Ok(false));
+        assert_eq!(flock_holders(&table(), inode), vec![std::process::id() as i32]);
+        drop(lock);
+        // A child another test is starting has the file open too (and so the
+        // lock), from its fork until it runs its program.
+        let since = Instant::now();
+        while !flock_holders(&table(), inode).is_empty() {
+            assert!(since.elapsed() < Duration::from_secs(2), "the lock is still held");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn a_child_whose_parent_went_before_it_asked_to_go_with_it_does_not_start() {
+        let mut command = Command::new("true");
+        die_with(&mut command, std::process::id() as i32);
+        assert!(command.status().unwrap().success());
+        // As a child sees it when its parent went: another process is its parent now.
+        let mut orphan = Command::new("true");
+        die_with(&mut orphan, std::process::id() as i32 + 1);
+        assert_eq!(orphan.status().map_err(|e| e.raw_os_error()).unwrap_err(), Some(ESRCH));
+    }
+
+    #[test]
+    fn a_child_told_its_parent_went_after_it_looked_ends_before_its_program_runs() {
+        extern "C" fn caught(_: i32) {}
+        let mut command = Command::new("true");
+        unsafe {
+            // The daemon's handler of SIGTERM, as the child has it from the fork.
+            command.pre_exec(|| {
+                signal(SIGTERM, Some(caught));
+                Ok(())
+            });
+        }
+        die_with(&mut command, std::process::id() as i32);
+        unsafe {
+            // The parent goes after the child looked whether it is there: the
+            // kernel sends it SIGTERM.
+            command.pre_exec(|| {
+                kill(std::process::id() as i32, SIGTERM);
+                Ok(())
+            });
+        }
+        let status = command.status().unwrap();
+        assert_eq!(std::os::unix::process::ExitStatusExt::signal(&status), Some(SIGTERM));
     }
 }

@@ -33,10 +33,12 @@ impl Kwin {
     /// A Plasma session: KWin is its compositor.
     pub fn find() -> Option<Self> {
         let desktop = std::env::var("XDG_CURRENT_DESKTOP").ok()?;
-        desktop
-            .split(':')
-            .any(|name| name.eq_ignore_ascii_case("KDE"))
-            .then(|| Self { report: Arc::new(Mutex::new(None)) })
+        desktop.split(':').any(|name| name.eq_ignore_ascii_case("KDE")).then(Self::new)
+    }
+
+    /// With no report yet.
+    pub(super) fn new() -> Self {
+        Self { report: Arc::new(Mutex::new(None)) }
     }
 }
 
@@ -275,6 +277,15 @@ impl Compositor for Kwin {
             })
             .collect()
     }
+
+    /// Its pictures are of Plasma's screens by number, one for each monitor
+    /// (see [`Kwin::pictures`]); awww's and swww's of connectors.
+    fn has_monitor(&self, name: &str, monitors: &[Monitor]) -> bool {
+        match name.parse::<usize>() {
+            Ok(screen) => screen < monitors.len(),
+            Err(_) => super::among(name, monitors),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -321,6 +332,18 @@ mod tests {
         assert!(SCRIPT.contains(r#"const daemon = "@DAEMON@";"#));
         assert!(SCRIPT.contains(PATH));
         assert!(SCRIPT.contains("io.github.MoonTiwzy.WeLinux.Desktop"));
+    }
+
+    #[test]
+    fn a_picture_is_kept_for_a_screen_by_its_number_or_its_connector() {
+        let kwin = Kwin::new();
+        let monitors = [super::super::monitor("DP-1")];
+        // Plasma's own: by number, one for each monitor.
+        assert!(kwin.has_monitor("0", &monitors));
+        assert!(!kwin.has_monitor("1", &monitors), "a screen no longer there");
+        // awww's and swww's: by connector.
+        assert!(kwin.has_monitor("DP-1", &monitors));
+        assert!(!kwin.has_monitor("HDMI-A-1", &monitors));
     }
 
     #[test]

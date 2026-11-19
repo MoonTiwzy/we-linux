@@ -206,6 +206,12 @@ impl Compositor for Wayland {
         Some(state.over())
     }
 
+    /// Nothing at all on the session's display: its compositor went (and
+    /// took its socket with it, or left it with nothing listening).
+    fn gone(&self) -> bool {
+        super::display_gone()
+    }
+
     fn tells(&self) -> Tells {
         static TELLS: OnceLock<Tells> = OnceLock::new();
         *TELLS.get_or_init(|| {
@@ -228,8 +234,18 @@ impl Compositor for Wayland {
         let seen = Arc::clone(&self.seen);
         std::thread::spawn(move || {
             let Some((_globals, mut queue, mut state)) = connect(true) else {
+                // Nothing at all on the session's display: its compositor went
+                // before the daemon started (it stays for a device then), or a
+                // moment ago, or the session has none. A daemon with nothing to
+                // draw on is not to hold the lock.
+                if super::display_gone() {
+                    crate::log::info("no compositor answers on the session's Wayland display");
+                    let _ = changes.send(Change::Gone);
+                }
                 return;
             };
+            // The compositor the daemon is connected to, as it answers on the display.
+            let ours = super::session_display();
             loop {
                 let over = state.over();
                 let changed = seen.lock().is_ok_and(|mut seen| {
@@ -240,10 +256,17 @@ impl Compositor for Wayland {
                 if changed && changes.send(Change::Covers).is_err() {
                     return;
                 }
-                // The compositor went: nothing more is known.
+                // The connection broke: nothing more is heard. The compositor
+                // went when nothing answers on its display now or another one
+                // took it (start-hyprland or a session restarting it); one that
+                // still answers there is asked anew in each round.
                 if queue.blocking_dispatch(&mut state).is_err() {
                     if let Ok(mut seen) = seen.lock() {
                         *seen = None;
+                    }
+                    if super::display_left(ours.as_ref()) {
+                        crate::log::info("the compositor left the session's Wayland display");
+                        let _ = changes.send(Change::Gone);
                     }
                     return;
                 }

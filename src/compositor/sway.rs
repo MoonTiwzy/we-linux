@@ -103,6 +103,22 @@ fn monitors_of(outputs: &Value) -> Vec<Monitor> {
         .collect()
 }
 
+/// The identifiers of the outputs that are on, which a config may name an
+/// output by instead of its name: "make model serial", one space between
+/// (sway-output(5)); sway says "Unknown" for what the output does not tell.
+fn identifiers_of(outputs: &Value) -> Vec<String> {
+    outputs
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|o| o["active"].as_bool() != Some(false))
+        .map(|o| {
+            let part = |key: &str| o[key].as_str().unwrap_or("Unknown").to_owned();
+            format!("{} {} {}", part("make"), part("model"), part("serial"))
+        })
+        .collect()
+}
+
 /// The windows under a node: the nodes without children of their own that
 /// are views (they have a pid), each with whether it floats.
 fn windows<'a>(node: &'a Value, floating: bool, into: &mut Vec<(&'a Value, bool)>) {
@@ -266,6 +282,12 @@ impl Compositor for Sway {
         Tells::ALL
     }
 
+    fn gone(&self) -> bool {
+        super::socket_gone(&self.socket)
+    }
+
+    /// When Sway goes, the daemon is told ([`Change::Gone`]): a Sway after it
+    /// has a socket of another name.
     fn watch(&self, changes: Sender<Change>) {
         let sway = Sway { socket: self.socket.clone() };
         std::thread::spawn(move || {
@@ -283,6 +305,11 @@ impl Compositor for Sway {
                             return;
                         }
                     }
+                }
+                if sway.gone() {
+                    crate::log::info("Sway went");
+                    let _ = changes.send(Change::Gone);
+                    return;
                 }
                 std::thread::sleep(Duration::from_secs(2));
             }
@@ -305,6 +332,19 @@ impl Compositor for Sway {
         self.ask(GET_CONFIG, "")
             .and_then(|reply| reply["config"].as_str().map(config_pictures))
             .unwrap_or_default()
+    }
+
+    fn pictures_are_shown(&self) -> bool {
+        false
+    }
+
+    /// The config names an output by its name or by its identifier (see
+    /// [`identifiers_of`]); unasked, it may be there.
+    fn has_monitor(&self, name: &str, monitors: &[Monitor]) -> bool {
+        super::among(name, monitors)
+            || self
+                .ask(GET_OUTPUTS, "")
+                .is_none_or(|outputs| identifiers_of(&outputs).iter().any(|id| id == name))
     }
 
     fn picture_covers(&self) -> bool {
@@ -391,6 +431,22 @@ mod tests {
             .collect();
         assert_eq!(changes.last(), Some(&Change::Layers));
         assert!(changes[..changes.len() - 1].iter().all(|c| *c == Change::Covers));
+    }
+
+    #[test]
+    fn an_output_is_identified_by_its_make_model_and_serial() {
+        // The headless outputs of the tests tell none of it.
+        assert_eq!(identifiers_of(&json("outputs.json")), vec!["Unknown Unknown Unknown"; 2]);
+        let outputs = serde_json::json!([
+            {"name": "DP-1", "make": "Dell Inc.", "model": "DELL U2720Q", "serial": "ABC123", "active": true},
+            {"name": "HDMI-A-1", "make": "Goldstar Company Ltd", "model": "LG TV", "serial": "0x01010101",
+             "active": false},
+            {"name": "eDP-1", "make": "BOE", "model": "0x0BCA"}
+        ]);
+        assert_eq!(
+            identifiers_of(&outputs),
+            vec!["Dell Inc. DELL U2720Q ABC123".to_owned(), "BOE 0x0BCA Unknown".to_owned()]
+        );
     }
 
     #[test]

@@ -162,17 +162,28 @@ impl Compositor for Niri {
         Tells { sleep: false, ..Tells::ALL }
     }
 
+    fn gone(&self) -> bool {
+        super::socket_gone(&self.socket)
+    }
+
+    /// When niri goes, the daemon is told ([`Change::Gone`]): a niri after it
+    /// has a socket of another name.
     fn watch(&self, changes: Sender<Change>) {
         let niri = Niri { socket: self.socket.clone() };
         std::thread::spawn(move || {
             loop {
                 if let Some(reader) = niri.connect(r#""EventStream""#) {
-                    for line in reader.lines().map_while(Result::ok) {
+                    for line in super::lines(reader) {
                         let event: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
                         if matters(&event) && changes.send(Change::Covers).is_err() {
                             return;
                         }
                     }
+                }
+                if niri.gone() {
+                    crate::log::info("niri went");
+                    let _ = changes.send(Change::Gone);
+                    return;
                 }
                 std::thread::sleep(Duration::from_secs(2));
             }
