@@ -5,6 +5,8 @@
 //! renderer is Plasma's own wallpaper (`org.kde.PlasmaShell.setWallpaper`).
 
 use std::collections::HashMap;
+use std::ffi::OsString;
+use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -138,7 +140,27 @@ fn picture_of(wallpaper: &HashMap<String, OwnedValue>) -> Option<PathBuf> {
         return None;
     }
     let image = String::try_from(wallpaper.get("Image")?.try_clone().ok()?).ok()?;
-    Some(PathBuf::from(image.strip_prefix("file://").unwrap_or(&image)))
+    Some(path_of(&image))
+}
+
+/// The file of Plasma's `Image`, read the way Plasma reads it (`QUrl`): a
+/// path as it is, which is what `show_picture` gives it; a `file://` URL, the
+/// way Plasma's own settings write it, ends at a `?` or `#` and has its `%XX`
+/// decoded (a `%` without two hex digits after it is a `%`).
+fn path_of(image: &str) -> PathBuf {
+    let Some(url) = image.strip_prefix("file://") else { return PathBuf::from(image) };
+    let mut pieces = url.split(['?', '#']).next().unwrap_or_default().split('%');
+    let mut bytes = pieces.next().unwrap_or_default().as_bytes().to_vec();
+    for piece in pieces {
+        let hex = piece.get(..2).filter(|hex| hex.bytes().all(|b| b.is_ascii_hexdigit()));
+        let (byte, rest) = match hex.and_then(|hex| u8::from_str_radix(hex, 16).ok()) {
+            Some(byte) => (byte, &piece[2..]),
+            None => (b'%', piece),
+        };
+        bytes.push(byte);
+        bytes.extend_from_slice(rest.as_bytes());
+    }
+    PathBuf::from(OsString::from_vec(bytes))
 }
 
 impl Compositor for Kwin {
@@ -208,14 +230,17 @@ impl Compositor for Kwin {
         else {
             return false;
         };
-        let url = format!("file://{}", image.display());
+        // The path, not a file:// URL of it: Plasma reads a path with
+        // `QUrl::fromUserInput`, which takes it as it is, where in a URL a `#`
+        // or a `?` in the name would end the path and a `%41` would be an `A`.
+        let path = image.to_string_lossy();
         let screens: Vec<u32> = match monitor {
             Some(screen) => screen.parse().ok().into_iter().collect(),
             None => (0..self.monitors().map_or(1, |m| m.len().max(1)) as u32).collect(),
         };
         let mut shown = false;
         for screen in screens {
-            let parameters = HashMap::from([("Image", zbus::zvariant::Value::from(url.as_str()))]);
+            let parameters = HashMap::from([("Image", zbus::zvariant::Value::from(&*path))]);
             shown |= shell.call::<_, _, ()>("setWallpaper", &(IMAGE, parameters, screen)).is_ok();
         }
         shown
@@ -296,5 +321,29 @@ mod tests {
         );
         let colour = HashMap::from([("wallpaperPlugin".to_owned(), value("org.kde.color"))]);
         assert_eq!(picture_of(&colour), None);
+    }
+
+    #[test]
+    fn a_picture_comes_back_as_the_same_file_whatever_its_name() {
+        // What `show_picture` gives Plasma, back as it is: a `%41` in a name stays.
+        for path in ["/home/u/a b#c?d.png", "/home/u/a%41b 100%.png", "/home/u/Обои é.png"] {
+            assert_eq!(path_of(path), PathBuf::from(path));
+        }
+        // What Plasma's own settings write: Qt 6's `QUrl::fromLocalFile(path).toString()`,
+        // its `FullyEncoded` form, and `plasma-apply-wallpaperimage`'s "file://" + path.
+        for (url, path) in [
+            ("file:///home/u/a b.png", "/home/u/a b.png"),
+            ("file:///home/u/Обои é.png", "/home/u/Обои é.png"),
+            ("file:///home/u/%D0%9E%D0%B1%D0%BE%D0%B8%20%C3%A9.png", "/home/u/Обои é.png"),
+            ("file:///home/u/a%23b.png", "/home/u/a#b.png"),
+            ("file:///home/u/a%3Fb.png", "/home/u/a?b.png"),
+            ("file:///home/u/a%2541b.png", "/home/u/a%41b.png"),
+            ("file:///home/u/%5Bx%5D%7By%7D%5E%7C%60%3C%3E%22%5C.png", r#"/home/u/[x]{y}^|`<>"\.png"#),
+            ("file:///home/u/100%.png", "/home/u/100%.png"),
+            ("file:///home/u/a%+1.png", "/home/u/a%+1.png"),
+            ("file:///usr/share/wallpapers/Next#dark", "/usr/share/wallpapers/Next"),
+        ] {
+            assert_eq!(path_of(url), PathBuf::from(path), "{url}");
+        }
     }
 }
