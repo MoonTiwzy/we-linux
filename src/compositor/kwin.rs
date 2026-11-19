@@ -163,6 +163,16 @@ fn path_of(image: &str) -> PathBuf {
     PathBuf::from(OsString::from_vec(bytes))
 }
 
+/// Plasma's number for a monitor by its connector name (DP-1), the name awww,
+/// swww and the other compositors give the pictures they show: Plasma's own
+/// `screenForConnector`, which counts the screens as `setWallpaper` does. The
+/// script's screens are KWin's, in another order.
+fn number(shell: &Proxy, connector: &str) -> Option<u32> {
+    let script = format!("print(String(screenForConnector({})))", serde_json::to_string(connector).ok()?);
+    let printed: String = shell.call("evaluateScript", &(script,)).ok()?;
+    printed.trim().parse().ok()
+}
+
 impl Compositor for Kwin {
     fn name(&self) -> &'static str {
         "KWin"
@@ -235,9 +245,14 @@ impl Compositor for Kwin {
         // or a `?` in the name would end the path and a `%41` would be an `A`.
         let path = image.to_string_lossy();
         let screens: Vec<u32> = match monitor {
-            Some(screen) => screen.parse().ok().into_iter().collect(),
+            Some(screen) => screen.parse().ok().or_else(|| number(&shell, screen)).into_iter().collect(),
             None => (0..self.monitors().map_or(1, |m| m.len().max(1)) as u32).collect(),
         };
+        if let Some(name) = monitor
+            && screens.is_empty()
+        {
+            crate::log::warn(format!("Plasma did not say which screen is {name}: no picture is shown there"));
+        }
         let mut shown = false;
         for screen in screens {
             let parameters = HashMap::from([("Image", zbus::zvariant::Value::from(&*path))]);
