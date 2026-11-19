@@ -44,6 +44,12 @@ impl Hyprland {
     fn json(&self, what: &str) -> Option<Value> {
         serde_json::from_str(&self.ask(&format!("j/{what}"))?).ok()
     }
+
+    /// Whether this Hyprland is gone: nothing listens on its socket. It takes
+    /// the socket with it when it exits; a crash leaves the file behind.
+    fn gone(&self) -> bool {
+        UnixStream::connect(self.dir.join(".socket.sock")).is_err()
+    }
 }
 
 /// The monitors of `j/monitors`: `x`, `y` are logical, `width`, `height` the
@@ -191,6 +197,13 @@ impl Compositor for Hyprland {
         Tells::ALL
     }
 
+    /// When this Hyprland goes, the daemon goes with it. A Hyprland that comes
+    /// after it (start-hyprland restarts one that crashed) has another
+    /// signature, and the daemon's environment keeps the old one: it would
+    /// stay blind to what covers the monitors, and hold the lock the new
+    /// Hyprland's own daemon needs. It does not leave by its way out, which
+    /// hands the desktop its pictures back: nothing is there to take them, and
+    /// they would be forgotten. Its renderer goes with it.
     fn watch(&self, changes: Sender<Change>) {
         let hyprland = Hyprland { dir: self.dir.clone() };
         std::thread::spawn(move || {
@@ -205,7 +218,12 @@ impl Compositor for Hyprland {
                         }
                     }
                 }
-                // Hyprland went (or restarts): look again in a moment.
+                if hyprland.gone() {
+                    crate::log::info("Hyprland went: the daemon goes with it, and its renderer");
+                    std::process::exit(0);
+                }
+                // The event socket closed and Hyprland still answers (or is not
+                // quite gone yet): look again in a moment.
                 std::thread::sleep(Duration::from_secs(2));
             }
         });
@@ -317,6 +335,22 @@ mod tests {
         assert_eq!(line("activewindowv2>>55c4a571d0a0"), Some(Change::Covers));
         assert_eq!(line("windowtitlev2>>55c4a571d0a0,zsh"), None);
         assert_eq!(line("configreloaded>>"), Some(Change::Layers));
+    }
+
+    #[test]
+    fn a_hyprland_is_gone_when_nothing_listens_on_its_socket() {
+        let dir = std::env::temp_dir().join(format!("we-linux-test-hyprland-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let hyprland = Hyprland { dir: dir.clone() };
+        // It exited and took its socket with it.
+        assert!(hyprland.gone());
+        let listening = std::os::unix::net::UnixListener::bind(dir.join(".socket.sock")).unwrap();
+        assert!(!hyprland.gone());
+        // It crashed: the socket is still there, nothing listens on it.
+        drop(listening);
+        assert!(hyprland.gone());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

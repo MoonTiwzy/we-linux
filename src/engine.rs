@@ -1217,9 +1217,15 @@ fn watch_files(wake: Sender<()>) {
 pub fn run_daemon() {
     log::as_role("daemon");
     let Some(lock) = lock_file() else { return };
-    if lock.try_lock().is_err() {
-        eprintln!("we-linux: the daemon is running already");
-        return;
+    // The daemon of a Hyprland that went leaves by itself, within seconds;
+    // the next Hyprland's daemon may start before that, and waits for it.
+    let since = Instant::now();
+    while lock.try_lock().is_err() {
+        if since.elapsed() > Duration::from_secs(5) {
+            eprintln!("we-linux: the daemon is running already");
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
     let side = compositor::current();
     log::info(format!(
