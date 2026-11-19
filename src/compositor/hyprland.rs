@@ -139,15 +139,30 @@ fn hyprpaper_pictures(text: &str) -> Vec<(String, PathBuf)> {
         .collect()
 }
 
-/// hyprpaper speaks its own protocol, and hyprctl is its client.
+/// hyprpaper speaks its own protocol, and hyprctl is its client. hyprctl
+/// gives hyprpaper 5 s to take the connection, then waits for the answer as
+/// long as it takes: a hyprpaper stuck on a picture would hold up whoever
+/// asks (the daemon's loop, the window) with it. So hyprctl has 5 s in all.
 fn hyprpaper(args: &[&str]) -> Option<String> {
-    let out = Command::new("hyprctl")
+    let mut child = Command::new("hyprctl")
         .arg("hyprpaper")
         .args(args)
         .stdin(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .output()
+        .spawn()
         .ok()?;
+    let since = std::time::Instant::now();
+    // The answer is a line a monitor: the pipe holds it until hyprctl is done.
+    while matches!(child.try_wait(), Ok(None)) {
+        if since.elapsed() > Duration::from_secs(5) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let out = child.wait_with_output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout).trim().to_owned();
     (out.status.success() && !text.starts_with("error") && !text.contains("Couldn't connect")).then_some(text)
 }
